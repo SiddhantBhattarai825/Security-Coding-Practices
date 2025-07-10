@@ -29,7 +29,7 @@ Security considerations absent from design phase
 
 #### **Step 1: Create Data Flow Diagrams**
 ```mermaid
-graph TD
+graph LR
     A[User] -->|Login Request| B[API Gateway]
     B -->|JWT| C[Authentication Service]
     C -->|Token| D[Order Service]
