@@ -1,4 +1,4 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A10:2021 - Server-Side Request Forgery)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A10:2021 - Server-Side Request Forgery)
 
 ## Comprehensive SSRF Protection System
 
@@ -6,81 +6,72 @@
 
 #### SSRF Protection Middleware
 
-```csharp
-public class SsrfProtectionMiddleware
+```php
+class SsrfProtectionMiddleware
 {
-    private readonly RequestDelegate _next;
-    private readonly ILogger<SsrfProtectionMiddleware> _logger;
-    private readonly ISsrfValidator _ssrfValidator;
+    private $next;
+    private $logger;
+    private $validator;
 
-    public SsrfProtectionMiddleware(
-        RequestDelegate next,
-        ILogger<SsrfProtectionMiddleware> logger,
-        ISsrfValidator ssrfValidator)
-    {
-        _next = next;
-        _logger = logger;
-        _ssrfValidator = ssrfValidator;
+    public function __construct(
+        callable $next,
+        LoggerInterface $logger,
+        SsrfValidator $validator
+    ) {
+        $this->next = $next;
+        $this->logger = $logger;
+        $this->validator = $validator;
     }
 
-    public async Task InvokeAsync(HttpContext context)
+    public function __invoke(Request $request, Response $response)
     {
-        // Check for potential SSRF vectors in the request
-        if (context.Request.HasFormContentType)
-        {
-            var form = await context.Request.ReadFormAsync();
-            foreach (var field in form)
-            {
-                if (_ssrfValidator.IsPotentialSsrfVector(field.Value))
-                {
-                    _logger.LogWarning("Potential SSRF attempt detected in form field {FieldName}", field.Key);
-                    await BlockRequest(context, field.Key);
-                    return;
-                }
+        // Check POST data
+        foreach ($request->getParsedBody() as $key => $value) {
+            if ($this->validator->isPotentialSsrfVector($value)) {
+                $this->logger->warning('Potential SSRF in POST field', ['field' => $key]);
+                return $this->blockRequest($response, $key);
             }
         }
 
-        foreach (var query in context.Request.Query)
-        {
-            if (_ssrfValidator.IsPotentialSsrfVector(query.Value))
-            {
-                _logger.LogWarning("Potential SSRF attempt detected in query parameter {ParamName}", query.Key);
-                await BlockRequest(context, query.Key);
-                return;
+        // Check query parameters
+        foreach ($request->getQueryParams() as $key => $value) {
+            if ($this->validator->isPotentialSsrfVector($value)) {
+                $this->logger->warning('Potential SSRF in query param', ['param' => $key]);
+                return $this->blockRequest($response, $key);
             }
         }
 
-        if (context.Request.Headers.TryGetValue("Forwarded", out var forwarded))
-        {
-            if (_ssrfValidator.IsPotentialSsrfVector(forwarded))
-            {
-                _logger.LogWarning("Potential SSRF attempt detected in Forwarded header");
-                await BlockRequest(context, "Forwarded");
-                return;
+        // Check headers
+        if ($request->hasHeader('Forwarded')) {
+            $forwarded = $request->getHeaderLine('Forwarded');
+            if ($this->validator->isPotentialSsrfVector($forwarded)) {
+                $this->logger->warning('Potential SSRF in Forwarded header');
+                return $this->blockRequest($response, 'Forwarded');
             }
         }
 
-        await _next(context);
+        // Call next middleware
+        return ($this->next)($request, $response);
     }
 
-    private async Task BlockRequest(HttpContext context, string vectorName)
+    private function blockRequest(Response $response, string $vector): Response
     {
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        await context.Response.WriteAsync($"Invalid request detected in parameter: {vectorName}");
+        $securityEvent = new SecurityEvent(
+            'SSRF_Attempt',
+            SecurityEventSeverity::HIGH,
+            [
+                'ip' => $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+                'vector' => $vector,
+                'path' => $_SERVER['REQUEST_URI'] ?? 'unknown'
+            ]
+        );
         
-        // Log security event
-        var securityEvent = new SecurityEvent
-        {
-            EventType = "SSRF_Attempt",
-            Severity = SecurityEventSeverity.High,
-            Details = new {
-                IpAddress = context.Connection.RemoteIpAddress?.ToString(),
-                Vector = vectorName,
-                Path = context.Request.Path
-            }
-        };
+        SecurityEventLogger::logEvent($securityEvent);
         
-        SecurityEventLogger.LogEvent(securityEvent);
+        return $response
+            ->withStatus(400)
+            ->withHeader('Content-Type', 'text/plain')
+            ->write("Invalid request detected in parameter: $vector");
     }
 }
 ```
@@ -89,73 +80,99 @@ public class SsrfProtectionMiddleware
 
 #### Whitelist-Based HTTP Client
 
-```csharp
-public class SecureHttpClient
+```php
+class SecureHttpClient
 {
-    private readonly HttpClient _httpClient;
-    private readonly IAllowedDomainService _domainService;
-    private readonly ILogger<SecureHttpClient> _logger;
+    private $client;
+    private $domainService;
+    private $logger;
 
-    public SecureHttpClient(
-        HttpClient httpClient,
-        IAllowedDomainService domainService,
-        ILogger<SecureHttpClient> logger)
-    {
-        _httpClient = httpClient;
-        _domainService = domainService;
-        _logger = logger;
-        
-        // Security hardening
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", "InternalService/1.0");
-        _httpClient.Timeout = TimeSpan.FromSeconds(30);
+    public function __construct(
+        ClientInterface $client,
+        AllowedDomainService $domainService,
+        LoggerInterface $logger
+    ) {
+        $this->client = $client;
+        $this->domainService = $domainService;
+        $this->logger = $logger;
     }
 
-    public async Task<string> GetStringAsync(string url, CancellationToken cancellationToken = default)
+    public function get(string $url): string
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            throw new ArgumentException("Invalid URL format");
+        $uri = $this->validateUrl($url);
+        
+        if (!$this->domainService->isAllowed($uri->getHost())) {
+            $this->logger->warning('SSRF attempt blocked - disallowed domain', ['domain' => $uri->getHost()]);
+            throw new SecurityException("Access to {$uri->getHost()} is not permitted");
         }
 
-        if (!await _domainService.IsAllowed(uri.Host))
-        {
-            _logger.LogWarning("SSRF attempt blocked - disallowed domain: {Domain}", uri.Host);
-            throw new SecurityException($"Access to {uri.Host} is not permitted");
-        }
-
-        if (IsPrivateIpAddress(uri.Host))
-        {
-            _logger.LogWarning("SSRF attempt blocked - private IP access: {Host}", uri.Host);
+        if ($this->isPrivateIpAddress($uri->getHost())) {
+            $this->logger->warning('SSRF attempt blocked - private IP access', ['host' => $uri->getHost()]);
             throw new SecurityException("Internal resource access not allowed");
         }
 
-        try
-        {
-            var response = await _httpClient.GetAsync(url, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsStringAsync();
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to fetch URL {Url}", url);
-            throw;
+        try {
+            $response = $this->client->request('GET', $url, [
+                'timeout' => 30,
+                'headers' => ['User-Agent' => 'InternalService/1.0']
+            ]);
+            
+            return (string)$response->getBody();
+        } catch (Exception $e) {
+            $this->logger->error('Failed to fetch URL', ['url' => $url, 'error' => $e->getMessage()]);
+            throw $e;
         }
     }
 
-    private bool IsPrivateIpAddress(string host)
+    private function validateUrl(string $url): UriInterface
     {
-        if (IPAddress.TryParse(host, out var ip))
-        {
-            var bytes = ip.GetAddressBytes();
-            return bytes[0] switch
-            {
-                10 => true, // 10.0.0.0/8
-                172 => bytes[1] >= 16 && bytes[1] <= 31, // 172.16.0.0/12
-                192 => bytes[1] == 168, // 192.168.0.0/16
-                _ => ip.Equals(IPAddress.Loopback) || 
-                     ip.Equals(IPAddress.IPv6Loopback)
-            };
+        try {
+            $uri = new Uri($url);
+            
+            if (!in_array($uri->getScheme(), ['http', 'https'])) {
+                throw new SecurityException("URL scheme '{$uri->getScheme()}' is not allowed");
+            }
+            
+            if ($uri->getScheme() === 'http' && 
+                !in_array($uri->getHost(), ['localhost', '127.0.0.1'])) {
+                throw new SecurityException("HTTP is only allowed for localhost");
+            }
+            
+            return $uri;
+        } catch (InvalidArgumentException $e) {
+            throw new SecurityException("Invalid URL format");
         }
+    }
+
+    private function isPrivateIpAddress(string $host): bool
+    {
+        if (!filter_var($host, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+        
+        $ip = ip2long($host);
+        if (!$ip) {
+            return false;
+        }
+        
+        // Private IP ranges
+        $privateRanges = [
+            ['10.0.0.0', '10.255.255.255'],       // 10.0.0.0/8
+            ['172.16.0.0', '172.31.255.255'],     // 172.16.0.0/12
+            ['192.168.0.0', '192.168.255.255'],   // 192.168.0.0/16
+            ['169.254.0.0', '169.254.255.255'],   // Link-local
+            ['127.0.0.0', '127.255.255.255']      // Loopback
+        ];
+        
+        foreach ($privateRanges as $range) {
+            $start = ip2long($range[0]);
+            $end = ip2long($range[1]);
+            
+            if ($ip >= $start && $ip <= $end) {
+                return true;
+            }
+        }
+        
         return false;
     }
 }
@@ -165,67 +182,50 @@ public class SecureHttpClient
 
 #### DNS Resolution Validator
 
-```csharp
-public class DnsResolutionValidator
+```php
+class DnsResolutionValidator
 {
-    private readonly IDnsResolver _dnsResolver;
-    private readonly ILogger<DnsResolutionValidator> _logger;
+    private $logger;
 
-    public DnsResolutionValidator(
-        IDnsResolver dnsResolver,
-        ILogger<DnsResolutionValidator> logger)
+    public function __construct(LoggerInterface $logger)
     {
-        _dnsResolver = dnsResolver;
-        _logger = logger;
+        $this->logger = $logger;
     }
 
-    public async Task ValidateUrlAsync(string url)
+    public function validateUrl(string $url): void
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            throw new ArgumentException("Invalid URL");
+        $uri = new Uri($url);
+        $host = $uri->getHost();
+        
+        $initialIps = $this->resolveHost($host);
+        $currentIps = $this->resolveHost($host);
+        
+        if ($initialIps != $currentIps) {
+            $this->logger->warning('DNS rebinding detected', [
+                'host' => $host,
+                'initial' => implode(',', $initialIps),
+                'current' => implode(',', $currentIps)
+            ]);
+            throw new SecurityException('DNS rebinding attempt detected');
         }
-
-        var host = uri.Host;
-        var requestedIps = await _dnsResolver.GetHostAddressesAsync(host);
-
-        // Check for DNS rebinding attempts
-        var currentIps = await _dnsResolver.GetHostAddressesAsync(host);
-        if (!requestedIps.SequenceEqual(currentIps))
-        {
-            _logger.LogWarning(
-                "DNS rebinding detected for {Host}. Initial: {InitialIPs}, Current: {CurrentIPs}",
-                host, 
-                string.Join(",", requestedIps.Select(ip => ip.ToString())),
-                string.Join(",", currentIps.Select(ip => ip.ToString())));
-                
-            throw new SecurityException("DNS rebinding attempt detected");
-        }
-
-        // Check against private IPs
-        foreach (var ip in currentIps)
-        {
-            if (IsPrivateIp(ip))
-            {
-                _logger.LogWarning("Private IP access attempt: {IP} for host {Host}", ip, host);
-                throw new SecurityException("Internal resource access not allowed");
+        
+        foreach ($currentIps as $ip) {
+            if ($this->isPrivateIp($ip)) {
+                $this->logger->warning('Private IP access attempt', ['ip' => $ip, 'host' => $host]);
+                throw new SecurityException('Internal resource access not allowed');
             }
         }
     }
 
-    private bool IsPrivateIp(IPAddress ip)
+    private function resolveHost(string $host): array
     {
-        if (IPAddress.IsLoopback(ip)) return true;
-        
-        var bytes = ip.GetAddressBytes();
-        return bytes[0] switch
-        {
-            10 => true, // 10.0.0.0/8
-            172 => bytes[1] >= 16 && bytes[1] <= 31, // 172.16.0.0/12
-            192 => bytes[1] == 168, // 192.168.0.0/16
-            169 => bytes[1] == 254, // 169.254.0.0/16
-            _ => false
-        };
+        $ips = gethostbynamel($host);
+        return $ips ?: [];
+    }
+
+    private function isPrivateIp(string $ip): bool
+    {
+        return !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
     }
 }
 ```
@@ -234,44 +234,35 @@ public class DnsResolutionValidator
 
 #### Secure URL Parser
 
-```csharp
-public class SecureUrlParser
+```php
+class SecureUrlParser
 {
-    private static readonly string[] AllowedSchemes = { "https", "http" };
-    private static readonly string[] BlockedSchemes = 
-    { 
-        "file", "gopher", "ftp", "smtp", 
-        "telnet", "ldap", "dict" 
-    };
+    private static $allowedSchemes = ['http', 'https'];
+    private static $blockedSchemes = ['file', 'gopher', 'ftp', 'smtp', 'telnet', 'ldap', 'dict'];
 
-    public Uri ParseAndValidate(string url)
+    public function parseAndValidate(string $url): UriInterface
     {
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            throw new ArgumentException("Invalid URL format");
-        }
-
-        if (BlockedSchemes.Contains(uri.Scheme, StringComparer.OrdinalIgnoreCase))
-        {
-            throw new SecurityException($"URL scheme '{uri.Scheme}' is not allowed");
-        }
-
-        if (!AllowedSchemes.Contains(uri.Scheme, StringComparer.OrdinalIgnoreCase))
-        {
-            throw new SecurityException($"URL scheme '{uri.Scheme}' is not permitted");
-        }
-
-        // Additional validation for http URLs
-        if (uri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase))
-        {
-            if (!uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) &&
-                !uri.Host.Equals("127.0.0.1"))
-            {
+        try {
+            $uri = new Uri($url);
+            
+            if (in_array(strtolower($uri->getScheme()), self::$blockedSchemes)) {
+                throw new SecurityException("URL scheme '{$uri->getScheme()}' is not allowed");
+            }
+            
+            if (!in_array(strtolower($uri->getScheme()), self::$allowedSchemes)) {
+                throw new SecurityException("URL scheme '{$uri->getScheme()}' is not permitted");
+            }
+            
+            // Additional validation for http URLs
+            if (strtolower($uri->getScheme()) === 'http' && 
+                !in_array(strtolower($uri->getHost()), ['localhost', '127.0.0.1'])) {
                 throw new SecurityException("HTTP is only allowed for localhost");
             }
+            
+            return $uri;
+        } catch (InvalidArgumentException $e) {
+            throw new SecurityException("Invalid URL format");
         }
-
-        return uri;
     }
 }
 ```
@@ -280,182 +271,151 @@ public class SecureUrlParser
 
 #### Cloud Metadata Shield
 
-```csharp
-public class CloudMetadataShield
+```php
+class CloudMetadataShield
 {
-    private readonly IReadOnlyList<string> _cloudMetadataEndpoints = new List<string>
-    {
-        "http://169.254.169.254", // AWS, Azure, GCP
-        "http://metadata.google.internal", // GCP
-        "http://169.254.169.254/metadata", // Azure
-        "http://100.100.100.200", // Alibaba Cloud
-        "http://192.0.0.192" // Oracle Cloud
-    };
+    private $metadataEndpoints = [
+        '169.254.169.254',
+        'metadata.google.internal',
+        '100.100.100.200',
+        '192.0.0.192'
+    ];
 
-    private readonly ILogger<CloudMetadataShield> _logger;
+    private $logger;
 
-    public CloudMetadataShield(ILogger<CloudMetadataShield> logger)
+    public function __construct(LoggerInterface $logger)
     {
-        _logger = logger;
+        $this->logger = $logger;
     }
 
-    public bool IsCloudMetadataRequest(string url)
+    public function isCloudMetadataRequest(string $url): bool
     {
-        if (string.IsNullOrWhiteSpace(url)) return false;
-
-        try
-        {
-            var uri = new Uri(url);
-            foreach (var endpoint in _cloudMetadataEndpoints)
-            {
-                if (uri.Host.Equals(new Uri(endpoint).Host, StringComparison.OrdinalIgnoreCase))
-                {
-                    _logger.LogWarning("Cloud metadata access attempt detected: {Url}", url);
+        try {
+            $host = parse_url($url, PHP_URL_HOST);
+            if (!$host) {
+                return false;
+            }
+            
+            foreach ($this->metadataEndpoints as $endpoint) {
+                if ($host === $endpoint || strpos($host, $endpoint) !== false) {
+                    $this->logger->warning('Cloud metadata access attempt', ['url' => $url]);
                     return true;
                 }
             }
-        }
-        catch (UriFormatException)
-        {
+        } catch (Exception $e) {
             return false;
         }
-
+        
         return false;
-    }
-
-    public void ValidateNoMetadataAccess(HttpRequestMessage request)
-    {
-        if (IsCloudMetadataRequest(request.RequestUri?.ToString()))
-        {
-            throw new SecurityException("Cloud metadata API access is prohibited");
-        }
     }
 }
 ```
 
 ### 6. Outbound Request Monitoring
 
-#### Secure Outbound HTTP Handler
+#### Secure HTTP Handler
 
-```csharp
-public class SecureHttpClientHandler : HttpClientHandler
+```php
+class SecureHttpHandler
 {
-    private readonly IRequestValidator _requestValidator;
-    private readonly ILogger<SecureHttpClientHandler> _logger;
+    private $validator;
+    private $logger;
 
-    public SecureHttpClientHandler(
-        IRequestValidator requestValidator,
-        ILogger<SecureHttpClientHandler> logger)
-    {
-        _requestValidator = requestValidator;
-        _logger = logger;
-        
-        // Security hardening
-        this.AllowAutoRedirect = false;
-        this.UseProxy = false;
-        this.MaxConnectionsPerServer = 4;
+    public function __construct(
+        RequestValidator $validator,
+        LoggerInterface $logger
+    ) {
+        $this->validator = $validator;
+        $this->logger = $logger;
     }
 
-    protected override async Task<HttpResponseMessage> SendAsync(
-        HttpRequestMessage request,
-        CancellationToken cancellationToken)
+    public function send(RequestInterface $request): ResponseInterface
     {
-        // Validate the request before sending
-        _requestValidator.ValidateOutboundRequest(request);
-
-        // Log the outbound request
-        _logger.LogInformation("Outbound request to {Host}", request.RequestUri.Host);
-
-        var response = await base.SendAsync(request, cancellationToken);
-
-        // Additional validation of the response
-        if ((int)response.StatusCode >= 400)
-        {
-            _logger.LogWarning("Outbound request failed with {StatusCode}", response.StatusCode);
+        $this->validator->validateOutboundRequest($request);
+        $this->logger->info('Outbound request', ['host' => $request->getUri()->getHost()]);
+        
+        $client = new Client([
+            'timeout' => 30,
+            'allow_redirects' => false
+        ]);
+        
+        try {
+            $response = $client->send($request);
+            
+            if ($response->getStatusCode() >= 400) {
+                $this->logger->warning('Outbound request failed', [
+                    'status' => $response->getStatusCode(),
+                    'url' => (string)$request->getUri()
+                ]);
+            }
+            
+            return $response;
+        } catch (Exception $e) {
+            $this->logger->error('Outbound request error', [
+                'url' => (string)$request->getUri(),
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
         }
-
-        return response;
     }
 }
 
-public class OutboundRequestValidator : IRequestValidator
+class OutboundRequestValidator
 {
-    private readonly ILogger<OutboundRequestValidator> _logger;
-    private readonly IAllowedDomainService _domainService;
-    private readonly CloudMetadataShield _metadataShield;
+    private $domainService;
+    private $metadataShield;
+    private $logger;
 
-    public OutboundRequestValidator(
-        ILogger<OutboundRequestValidator> logger,
-        IAllowedDomainService domainService,
-        CloudMetadataShield metadataShield)
-    {
-        _logger = logger;
-        _domainService = domainService;
-        _metadataShield = metadataShield;
+    public function __construct(
+        AllowedDomainService $domainService,
+        CloudMetadataShield $metadataShield,
+        LoggerInterface $logger
+    ) {
+        $this->domainService = $domainService;
+        $this->metadataShield = $metadataShield;
+        $this->logger = $logger;
     }
 
-    public void ValidateOutboundRequest(HttpRequestMessage request)
+    public function validateOutboundRequest(RequestInterface $request): void
     {
-        var uri = request.RequestUri;
-        if (uri == null) return;
-
-        // Check for cloud metadata endpoints
-        if (_metadataShield.IsCloudMetadataRequest(uri.ToString()))
-        {
-            _logger.LogWarning("Cloud metadata access attempt blocked");
-            throw new SecurityException("Cloud metadata access is prohibited");
-        }
-
-        // Validate the host is allowed
-        if (!_domainService.IsAllowed(uri.Host).GetAwaiter().GetResult())
-        {
-            _logger.LogWarning("Outbound request to blocked domain: {Domain}", uri.Host);
-            throw new SecurityException($"Requests to {uri.Host} are not permitted");
-        }
-
-        // Check for private IP addresses
-        if (IsPrivateIpAddress(uri.Host))
-        {
-            _logger.LogWarning("Outbound request to private IP blocked: {Host}", uri.Host);
-            throw new SecurityException("Internal resource access not allowed");
-        }
-
-        // Validate HTTP headers for security
-        ValidateHeaders(request.Headers);
-    }
-
-    private bool IsPrivateIpAddress(string host)
-    {
-        if (IPAddress.TryParse(host, out var ip))
-        {
-            var bytes = ip.GetAddressBytes();
-            return bytes[0] switch
-            {
-                10 => true, // 10.0.0.0/8
-                172 => bytes[1] >= 16 && bytes[1] <= 31, // 172.16.0.0/12
-                192 => bytes[1] == 168, // 192.168.0.0/16
-                _ => ip.Equals(IPAddress.Loopback) || 
-                     ip.Equals(IPAddress.IPv6Loopback)
-            };
-        }
-        return false;
-    }
-
-    private void ValidateHeaders(HttpRequestHeaders headers)
-    {
-        // Remove sensitive headers that might be added by default
-        headers.Remove("Authorization");
-        headers.Remove("Cookie");
-        headers.Remove("X-Forwarded-For");
+        $uri = $request->getUri();
         
-        // Validate no sensitive information is being sent
-        foreach (var header in headers)
-        {
-            if (header.Key.ToLower().Contains("token") || 
-                header.Key.ToLower().Contains("secret"))
-            {
-                _logger.LogWarning("Sensitive header detected in outbound request: {Header}", header.Key);
-                throw new SecurityException("Sensitive headers are not allowed in outbound requests");
+        if ($this->metadataShield->isCloudMetadataRequest((string)$uri)) {
+            $this->logger->warning('Cloud metadata access blocked');
+            throw new SecurityException('Cloud metadata access is prohibited');
+        }
+        
+        if (!$this->domainService->isAllowed($uri->getHost())) {
+            $this->logger->warning('Outbound request to blocked domain', ['domain' => $uri->getHost()]);
+            throw new SecurityException("Requests to {$uri->getHost()} are not permitted");
+        }
+        
+        if ($this->isPrivateIpAddress($uri->getHost())) {
+            $this->logger->warning('Outbound request to private IP blocked', ['host' => $uri->getHost()]);
+            throw new SecurityException('Internal resource access not allowed');
+        }
+        
+        $this->validateHeaders($request->getHeaders());
+    }
+
+    private function isPrivateIpAddress(string $host): bool
+    {
+        if (!filter_var($host, FILTER_VALIDATE_IP)) {
+            return false;
+        }
+        
+        return !filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+    }
+
+    private function validateHeaders(array $headers): void
+    {
+        foreach ($headers as $name => $values) {
+            $lowerName = strtolower($name);
+            
+            if (strpos($lowerName, 'token') !== false || 
+                strpos($lowerName, 'secret') !== false) {
+                $this->logger->warning('Sensitive header detected', ['header' => $name]);
+                throw new SecurityException('Sensitive headers are not allowed in outbound requests');
             }
         }
     }
@@ -465,36 +425,79 @@ public class OutboundRequestValidator : IRequestValidator
 ## Implementation Checklist
 
 1. **Input Validation**
-   - Validate all user-supplied URLs
-   - Restrict allowed URL schemes
-   - Block internal/private IP addresses
+   - Validate all user-supplied URLs and hosts
+   - Restrict allowed URL schemes (block file://, ftp://, etc.)
+   - Block internal/private IP addresses and domains
 
-2. **Network Layer Controls**
-   - Implement egress firewalls
-   - Restrict outbound connections
-   - Use network segmentation
+2. **Network Controls**
+   - Implement egress firewalls to restrict outbound connections
+   - Use network segmentation to isolate sensitive services
+   - Configure web server to restrict local file access
 
-3. **Application Layer Controls**
-   - Use whitelists for allowed domains
-   - Implement secure HTTP clients
-   - Validate DNS resolutions
+3. **Application Controls**
+   - Use whitelists for allowed domains and endpoints
+   - Implement secure HTTP clients with timeouts and redirect limits
+   - Validate DNS resolutions to prevent rebinding attacks
 
 4. **Cloud Protections**
-   - Block access to cloud metadata APIs
-   - Restrict instance permissions
+   - Block access to cloud metadata APIs (169.254.169.254)
+   - Restrict instance permissions using IAM roles
    - Use service accounts with minimal privileges
 
 5. **Monitoring & Logging**
-   - Log all outbound requests
-   - Monitor for suspicious patterns
-   - Alert on SSRF attempts
+   - Log all outbound HTTP requests with source and destination
+   - Monitor for suspicious request patterns (internal IPs, metadata endpoints)
+   - Set up alerts for potential SSRF attempts
 
 6. **Defense in Depth**
-   - Use multiple validation layers
+   - Implement multiple validation layers (input, DNS, network)
    - Combine static and runtime checks
-   - Implement request signing where possible
+   - Use request signing for sensitive internal services
 
 7. **Regular Testing**
-   - Conduct SSRF penetration tests
-   - Review outbound traffic patterns
-   - Audit all URL fetching functionality
+   - Conduct SSRF penetration tests using various payloads
+   - Review outbound traffic patterns and logs
+   - Audit all URL fetching functionality in the application
+
+## PHP-Specific Recommendations
+
+1. **Configuration Hardening**
+   - Disable dangerous PHP functions (fsockopen, curl_exec, file_get_contents)
+   - Set open_basedir restrictions
+   - Configure allow_url_fopen=Off in production
+
+2. **WordPress Specific**
+   - Validate all URLs in plugin settings and custom fields
+   - Use wp_http_validate_url() for URL validation
+   - Implement security plugins that detect SSRF attempts
+
+3. **Laravel Specific**
+   - Use Guzzle with custom handlers for outbound requests
+   - Implement middleware to validate request parameters
+   - Use Laravel's validation system for URL inputs
+
+4. **General Best Practices**
+   - Use PHP's filter_var() for URL validation
+   - Prefer curl over file_get_contents for HTTP requests
+   - Implement proper error handling to avoid exposing internal information
+
+## Example Deployment Configuration
+
+```bash
+# PHP.ini security settings
+sed -i 's/allow_url_fopen = On/allow_url_fopen = Off/' /etc/php/8.1/fpm/php.ini
+sed -i 's/disable_functions =.*/disable_functions = fsockopen,pfsockopen,stream_socket_client,curl_exec/' /etc/php/8.1/fpm/php.ini
+
+# Configure open_basedir
+echo 'open_basedir = /var/www:/tmp' >> /etc/php/8.1/fpm/php.ini
+
+# Network egress restrictions
+iptables -A OUTPUT -p tcp --dport 80 -j ALLOWED_OUT
+iptables -A OUTPUT -p tcp --dport 443 -j ALLOWED_OUT
+iptables -A OUTPUT -p tcp -d 169.254.169.254 --dport 80 -j DROP
+iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport 80 -j DROP
+
+# Restart services
+systemctl restart php8.1-fpm
+systemctl restart nginx
+```
