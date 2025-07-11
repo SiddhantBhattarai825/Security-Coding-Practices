@@ -1,188 +1,149 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A08:2021 - Software and Data Integrity Failures)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A08:2021 - Software and Data Integrity Failures)
 
 ## Comprehensive Data Integrity Protection System
 
 ### 1. Secure Code Deployment Pipeline
 
-#### Code Signing and Verification Service
+#### Code Signing and Verification Implementation
 
-```csharp
-public class CodeSigningService
+```php
+class CodeSigningService
 {
-    private readonly X509Certificate2 _signingCertificate;
-    private readonly ILogger<CodeSigningService> _logger;
+    private $privateKey;
+    private $publicKey;
+    private $logger;
 
-    public CodeSigningService(
-        IConfiguration config,
-        ILogger<CodeSigningService> logger)
-    {
-        _signingCertificate = LoadCertificate(config["CodeSigning:CertPath"], 
-                                           config["CodeSigning:CertPassword"]);
-        _logger = logger;
+    public function __construct(
+        string $privateKeyPath,
+        string $publicKeyPath,
+        LoggerInterface $logger
+    ) {
+        $this->privateKey = openssl_pkey_get_private(
+            file_get_contents($privateKeyPath),
+            $_ENV['CODE_SIGNING_KEY_PASS']
+        );
+        $this->publicKey = openssl_pkey_get_public(
+            file_get_contents($publicKeyPath)
+        );
+        $this->logger = $logger;
     }
 
-    public byte[] SignAssembly(byte[] assemblyBytes)
+    public function signFile(string $filePath): string
     {
-        using var rsa = _signingCertificate.GetRSAPrivateKey();
-        var hash = SHA256.HashData(assemblyBytes);
-        var signature = rsa.SignHash(hash, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        $fileContent = file_get_contents($filePath);
+        openssl_sign($fileContent, $signature, $this->privateKey, OPENSSL_ALGO_SHA256);
         
-        _logger.LogInformation("Assembly signed with certificate {Thumbprint}", 
-            _signingCertificate.Thumbprint);
-            
-        return signature;
+        $this->logger->info("File signed successfully", ['file' => $filePath]);
+        return base64_encode($signature);
     }
 
-    public bool VerifyAssembly(byte[] assemblyBytes, byte[] signature)
+    public function verifyFile(string $filePath, string $signature): bool
     {
-        using var rsa = _signingCertificate.GetRSAPublicKey();
-        var hash = SHA256.HashData(assemblyBytes);
-        var isValid = rsa.VerifyHash(hash, signature, 
-            HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            
-        if (!isValid)
-        {
-            _logger.LogWarning("Assembly signature verification failed");
+        $fileContent = file_get_contents($filePath);
+        $signature = base64_decode($signature);
+        $result = openssl_verify(
+            $fileContent, 
+            $signature, 
+            $this->publicKey, 
+            OPENSSL_ALGO_SHA256
+        );
+        
+        if ($result !== 1) {
+            $this->logger->warning("File verification failed", ['file' => $filePath]);
         }
         
-        return isValid;
+        return $result === 1;
     }
 
-    private X509Certificate2 LoadCertificate(string path, string password)
+    public function verifyGitCommit(string $commitHash): bool
     {
-        try
-        {
-            return new X509Certificate2(path, password, 
-                X509KeyStorageFlags.EphemeralKeySet | 
-                X509KeyStorageFlags.Exportable);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogCritical(ex, "Failed to load code signing certificate");
-            throw new SecurityException("Code signing certificate load failed", ex);
-        }
-    }
-}
-
-// CI/CD Integration Example
-public class BuildPipelineService
-{
-    private readonly CodeSigningService _signingService;
-    private readonly IArtifactRepository _artifactRepo;
-
-    public BuildPipelineService(
-        CodeSigningService signingService,
-        IArtifactRepository artifactRepo)
-    {
-        _signingService = signingService;
-        _artifactRepo = artifactRepo;
-    }
-
-    public async Task<BuildResult> BuildAndSignAsync(ProjectBuildRequest request)
-    {
-        var buildResult = await BuildProjectAsync(request);
+        $output = shell_exec("git verify-commit $commitHash 2>&1");
+        $verified = strpos($output, 'Good signature') !== false;
         
-        // Sign all output assemblies
-        foreach (var artifact in buildResult.Artifacts)
-        {
-            var signature = _signingService.SignAssembly(artifact.Content);
-            artifact.Signature = signature;
+        if (!$verified) {
+            $this->logger->error("Invalid commit signature", ['commit' => $commitHash]);
         }
         
-        // Store signed artifacts
-        await _artifactRepo.StoreAsync(buildResult);
-        
-        return buildResult;
+        return $verified;
     }
 }
 ```
 
 ### 2. Secure Update Mechanism
 
-#### Cryptographic Update Verification System
+#### Cryptographic Update Verification
 
-```csharp
-public class SecureUpdateService
+```php
+class SecureUpdateService
 {
-    private readonly IUpdateRepository _updateRepo;
-    private readonly CodeSigningService _signingService;
-    private readonly ILogger<SecureUpdateService> _logger;
+    private $signingService;
+    private $updateRepository;
+    private $logger;
 
-    public SecureUpdateService(
-        IUpdateRepository updateRepo,
-        CodeSigningService signingService,
-        ILogger<SecureUpdateService> logger)
-    {
-        _updateRepo = updateRepo;
-        _signingService = signingService;
-        _logger = logger;
+    public function __construct(
+        CodeSigningService $signingService,
+        UpdateRepository $updateRepository,
+        LoggerInterface $logger
+    ) {
+        $this->signingService = $signingService;
+        $this->updateRepository = $updateRepository;
+        $this->logger = $logger;
     }
 
-    public async Task<UpdateVerificationResult> VerifyUpdateAsync(
-        string updatePackagePath)
+    public function verifyUpdatePackage(string $packagePath): UpdateVerificationResult
     {
-        var result = new UpdateVerificationResult();
+        $result = new UpdateVerificationResult();
         
-        try
-        {
-            // Step 1: Verify package signature
-            var package = await _updateRepo.GetPackageAsync(updatePackagePath);
-            if (!_signingService.VerifyAssembly(
-                package.Content, package.Signature))
-            {
-                result.Errors.Add("Invalid package signature");
-                _logger.LogError("Update package signature verification failed");
-                return result;
+        try {
+            $package = $this->updateRepository->getPackage($packagePath);
+            
+            // 1. Verify package signature
+            if (!$this->signingService->verifyFile($packagePath, $package->getSignature())) {
+                $result->addError("Invalid package signature");
+                $this->logger->error("Update package signature verification failed");
+                return $result;
             }
 
-            // Step 2: Verify manifest integrity
-            var manifestHash = ComputeManifestHash(package.Manifest);
-            if (!manifestHash.SequenceEqual(package.ManifestHash))
-            {
-                result.Errors.Add("Manifest integrity check failed");
-                _logger.LogError("Update package manifest verification failed");
-                return result;
+            // 2. Verify manifest integrity
+            $manifestHash = $this->computeManifestHash($package->getManifest());
+            if (!hash_equals($manifestHash, $package->getManifestHash())) {
+                $result->addError("Manifest integrity check failed");
+                $this->logger->error("Update package manifest verification failed");
+                return $result;
             }
 
-            // Step 3: Verify dependency graph
-            var dependencyResult = VerifyDependencies(package.Manifest);
-            if (!dependencyResult.IsValid)
-            {
-                result.Errors.AddRange(dependencyResult.Errors);
-                return result;
+            // 3. Verify dependency graph
+            $dependencyResult = $this->verifyDependencies($package->getManifest());
+            if (!$dependencyResult->isValid()) {
+                $result->addErrors($dependencyResult->getErrors());
+                return $result;
             }
 
-            result.IsValid = true;
-            return result;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Update verification failed");
-            result.Errors.Add("Update verification process failed");
-            return result;
+            $result->setValid(true);
+            return $result;
+        } catch (Exception $e) {
+            $this->logger->error("Update verification failed", ['error' => $e->getMessage()]);
+            $result->addError("Update verification process failed");
+            return $result;
         }
     }
 
-    private byte[] ComputeManifestHash(UpdateManifest manifest)
+    private function computeManifestHash(UpdateManifest $manifest): string
     {
-        using var sha256 = SHA256.Create();
-        return sha256.ComputeHash(Encoding.UTF8.GetBytes(manifest.ToJson()));
+        return hash('sha256', json_encode($manifest));
     }
 
-    private DependencyVerificationResult VerifyDependencies(UpdateManifest manifest)
+    private function verifyDependencies(UpdateManifest $manifest): DependencyVerificationResult
     {
-        var result = new DependencyVerificationResult();
+        $result = new DependencyVerificationResult();
         
-        foreach (var dependency in manifest.Dependencies)
-        {
-            if (!_updateRepo.IsDependencyAllowed(dependency))
-            {
-                result.Errors.Add($"Dependency {dependency.Name}@{dependency.Version} is not allowed");
+        foreach ($manifest->getDependencies() as $dependency) {
+            if (!$this->updateRepository->isDependencyAllowed($dependency)) {
+                $result->addError("Dependency {$dependency->getName()}@{$dependency->getVersion()} is not allowed");
             }
         }
         
-        result.IsValid = !result.Errors.Any();
-        return result;
+        return $result;
     }
 }
 ```
@@ -191,111 +152,107 @@ public class SecureUpdateService
 
 #### Cryptographic Data Integrity Service
 
-```csharp
-public class DataIntegrityService
+```php
+class DataIntegrityService
 {
-    private readonly IKeyVaultService _keyVault;
-    private readonly ILogger<DataIntegrityService> _logger;
+    private $keyVault;
+    private $logger;
 
-    public DataIntegrityService(
-        IKeyVaultService keyVault,
-        ILogger<DataIntegrityService> logger)
-    {
-        _keyVault = keyVault;
-        _logger = logger;
+    public function __construct(
+        KeyVaultService $keyVault,
+        LoggerInterface $logger
+    ) {
+        $this->keyVault = $keyVault;
+        $this->logger = $logger;
     }
 
-    public async Task<SignedData> SignDataAsync(byte[] data, string keyId)
+    public function signData(string $data, string $keyId): SignedData
     {
-        try
-        {
-            var key = await _keyVault.GetKeyAsync(keyId);
-            var hash = SHA256.HashData(data);
-            var signature = await _keyVault.SignAsync(keyId, hash);
+        try {
+            $hash = hash('sha256', $data, true);
+            $signature = $this->keyVault->sign($keyId, $hash);
             
-            return new SignedData
-            {
-                Data = data,
-                Signature = signature,
-                KeyId = keyId,
-                Algorithm = "SHA256withRSA",
-                Timestamp = DateTime.UtcNow
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Data signing failed");
-            throw new DataIntegrityException("Data signing operation failed", ex);
+            return new SignedData(
+                $data,
+                $signature,
+                $keyId,
+                'SHA256withRSA',
+                new DateTime()
+            );
+        } catch (Exception $e) {
+            $this->logger->error("Data signing failed", ['error' => $e->getMessage()]);
+            throw new DataIntegrityException("Data signing operation failed");
         }
     }
 
-    public async Task<bool> VerifyDataAsync(SignedData signedData)
+    public function verifyData(SignedData $signedData): bool
     {
-        try
-        {
-            var hash = SHA256.HashData(signedData.Data);
-            return await _keyVault.VerifyAsync(
-                signedData.KeyId, 
-                hash, 
-                signedData.Signature);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Data verification failed");
+        try {
+            $hash = hash('sha256', $signedData->getData(), true);
+            return $this->keyVault->verify(
+                $signedData->getKeyId(),
+                $hash,
+                $signedData->getSignature()
+            );
+        } catch (Exception $e) {
+            $this->logger->error("Data verification failed", ['error' => $e->getMessage()]);
             return false;
         }
     }
 
-    public async Task<EncryptedData> EncryptDataAsync(byte[] data, string keyId)
+    public function encryptData(string $data, string $keyId): EncryptedData
     {
-        try
-        {
+        try {
             // Generate random AES key
-            var aesKey = GenerateAesKey();
+            $aesKey = random_bytes(32);
+            $iv = random_bytes(16);
             
             // Encrypt data with AES
-            var iv = GenerateRandomIv();
-            var encryptedData = EncryptWithAes(data, aesKey, iv);
+            $cipherText = openssl_encrypt(
+                $data,
+                'aes-256-cbc',
+                $aesKey,
+                OPENSSL_RAW_DATA,
+                $iv
+            );
             
             // Encrypt AES key with RSA
-            var encryptedKey = await _keyVault.EncryptAsync(keyId, aesKey);
+            $encryptedKey = $this->keyVault->encrypt($keyId, $aesKey);
             
-            return new EncryptedData
-            {
-                CipherText = encryptedData,
-                EncryptedKey = encryptedKey,
-                Iv = iv,
-                KeyId = keyId,
-                Algorithm = "AES-256-CBC with RSA-OAEP",
-                Timestamp = DateTime.UtcNow
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Data encryption failed");
-            throw new DataIntegrityException("Data encryption failed", ex);
+            return new EncryptedData(
+                $cipherText,
+                $encryptedKey,
+                $iv,
+                $keyId,
+                'AES-256-CBC with RSA-OAEP',
+                new DateTime()
+            );
+        } catch (Exception $e) {
+            $this->logger->error("Data encryption failed", ['error' => $e->getMessage()]);
+            throw new DataIntegrityException("Data encryption failed");
         }
     }
 
-    public async Task<byte[]> DecryptDataAsync(EncryptedData encryptedData)
+    public function decryptData(EncryptedData $encryptedData): string
     {
-        try
-        {
+        try {
             // Decrypt AES key with RSA
-            var aesKey = await _keyVault.DecryptAsync(
-                encryptedData.KeyId, 
-                encryptedData.EncryptedKey);
-                
+            $aesKey = $this->keyVault->decrypt(
+                $encryptedData->getKeyId(),
+                $encryptedData->getEncryptedKey()
+            );
+            
             // Decrypt data with AES
-            return DecryptWithAes(
-                encryptedData.CipherText, 
-                aesKey, 
-                encryptedData.Iv);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Data decryption failed");
-            throw new DataIntegrityException("Data decryption failed", ex);
+            return openssl_decrypt(
+                $encryptedData->getCipherText(),
+                'aes-256-cbc',
+                $aesKey,
+                OPENSSL_RAW_DATA,
+                $encryptedData->getIv()
+            );
+        } catch (Exception $e) {
+            $this->logger->error("Data decryption failed", ['error' => $e->getMessage()]);
+            throw new DataIntegrityException("Data decryption failed");
         }
     }
 }
@@ -303,139 +260,123 @@ public class DataIntegrityService
 
 ### 4. Secure Deserialization
 
-#### Safe Serialization Service with Validation
+#### Safe Serialization with Validation
 
-```csharp
-public class SecureSerializer
+```php
+class SecureSerializer
 {
-    private readonly JsonSerializerSettings _settings;
-    private readonly ILogger<SecureSerializer> _logger;
+    private $allowedTypes;
+    private $logger;
 
-    public SecureSerializer(
-        ITypeResolver typeResolver,
-        ILogger<SecureSerializer> logger)
+    public function __construct(
+        array $allowedTypes,
+        LoggerInterface $logger
+    ) {
+        $this->allowedTypes = $allowedTypes;
+        $this->logger = $logger;
+    }
+
+    public function serialize($data): string
     {
-        _logger = logger;
+        return json_encode($data);
+    }
+
+    public function deserialize(string $json, string $expectedType)
+    {
+        if (!in_array($expectedType, $this->allowedTypes)) {
+            $this->logger->warning("Attempt to deserialize unauthorized type", ['type' => $expectedType]);
+            throw new SecureSerializationException("Unauthorized type: $expectedType");
+        }
+
+        $data = json_decode($json, true);
         
-        _settings = new JsonSerializerSettings
-        {
-            TypeNameHandling = TypeNameHandling.None, // Critical for security
-            ContractResolver = new SecureContractResolver(typeResolver),
-            MissingMemberHandling = MissingMemberHandling.Error,
-            DateParseHandling = DateParseHandling.None,
-            MaxDepth = 32,
-            SerializationBinder = new BlockedTypesBinder()
-        };
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $this->logger->warning("Invalid JSON data during deserialization");
+            throw new SecureSerializationException("Invalid JSON data");
+        }
+
+        // Validate the structure matches expected type
+        $validationResult = $this->validateDataStructure($data, $expectedType);
+        if (!$validationResult->isValid()) {
+            $this->logger->warning("Data structure validation failed", [
+                'errors' => $validationResult->getErrors()
+            ]);
+            throw new SecureSerializationException("Data structure validation failed");
+        }
+
+        return $this->hydrateObject($data, $expectedType);
     }
 
-    public string Serialize<T>(T obj)
+    private function validateDataStructure(array $data, string $expectedType): ValidationResult
     {
-        return JsonConvert.SerializeObject(obj, _settings);
-    }
-
-    public T Deserialize<T>(string json)
-    {
-        try
-        {
-            return JsonConvert.DeserializeObject<T>(json, _settings);
-        }
-        catch (JsonSerializationException ex)
-        {
-            _logger.LogWarning(ex, "Potential unsafe deserialization attempt");
-            throw new SecureSerializationException("Invalid JSON structure", ex);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Deserialization failed");
-            throw new SecureSerializationException("Deserialization error", ex);
-        }
-    }
-}
-
-public class BlockedTypesBinder : ISerializationBinder
-{
-    private readonly HashSet<string> _allowedTypes = new()
-    {
-        "System.String", "System.Int32", "System.DateTime",
-        "MyApp.Models.SafeType1", "MyApp.Models.SafeType2"
-    };
-
-    public Type BindToType(string assemblyName, string typeName)
-    {
-        var fullName = $"{typeName}, {assemblyName}";
-        if (!_allowedTypes.Contains(fullName))
-        {
-            throw new JsonSerializationException(
-                $"Type {fullName} is not allowed for deserialization");
-        }
+        $result = new ValidationResult();
         
-        return Type.GetType(fullName);
+        // Implementation would validate the array structure
+        // matches the expected type's requirements
+        
+        return $result;
     }
 
-    public void BindToName(Type serializedType, out string assemblyName, out string typeName)
+    private function hydrateObject(array $data, string $className)
     {
-        assemblyName = null;
-        typeName = null;
+        // Implementation would create and hydrate
+        // an object of the specified class
     }
 }
 ```
 
 ### 5. CI/CD Pipeline Security
 
-#### Secure Build Validation Service
+#### Secure Build Validation
 
-```csharp
-public class BuildSecurityValidator
+```php
+class BuildSecurityValidator
 {
-    private readonly IDependencyScanner _dependencyScanner;
-    private readonly ICodeAnalyzer _codeAnalyzer;
-    private readonly ILogger<BuildSecurityValidator> _logger;
+    private $dependencyScanner;
+    private $codeAnalyzer;
+    private $logger;
 
-    public BuildSecurityValidator(
-        IDependencyScanner dependencyScanner,
-        ICodeAnalyzer codeAnalyzer,
-        ILogger<BuildSecurityValidator> logger)
-    {
-        _dependencyScanner = dependencyScanner;
-        _codeAnalyzer = codeAnalyzer;
-        _logger = logger;
+    public function __construct(
+        DependencyScanner $dependencyScanner,
+        CodeAnalyzer $codeAnalyzer,
+        LoggerInterface $logger
+    ) {
+        $this->dependencyScanner = $dependencyScanner;
+        $this->codeAnalyzer = $codeAnalyzer;
+        $this->logger = $logger;
     }
 
-    public async Task<BuildValidationResult> ValidateBuildAsync(BuildArtifact artifact)
+    public function validateBuild(BuildArtifact $artifact): BuildValidationResult
     {
-        var result = new BuildValidationResult();
+        $result = new BuildValidationResult();
         
         // 1. Dependency scanning
-        var dependencyResult = await _dependencyScanner.ScanAsync(artifact);
-        if (dependencyResult.Vulnerabilities.Any())
-        {
-            result.Errors.AddRange(dependencyResult.Vulnerabilities
-                .Select(v => $"Dependency vulnerability: {v.PackageName}@{v.PackageVersion} - {v.Description}"));
+        $dependencyResult = $this->dependencyScanner->scan($artifact);
+        if ($dependencyResult->hasVulnerabilities()) {
+            foreach ($dependencyResult->getVulnerabilities() as $vuln) {
+                $result->addError("Dependency vulnerability: {$vuln->getPackageName()}@{$vuln->getPackageVersion()} - {$vuln->getDescription()}");
+            }
         }
 
         // 2. Static code analysis
-        var codeAnalysisResult = await _codeAnalyzer.AnalyzeAsync(artifact);
-        if (codeAnalysisResult.Issues.Any())
-        {
-            result.Errors.AddRange(codeAnalysisResult.Issues
-                .Where(i => i.Severity >= IssueSeverity.High)
-                .Select(i => $"Code issue: {i.Description} in {i.FilePath}"));
+        $codeAnalysisResult = $this->codeAnalyzer->analyze($artifact);
+        foreach ($codeAnalysisResult->getIssues() as $issue) {
+            if ($issue->getSeverity() >= IssueSeverity::HIGH) {
+                $result->addError("Code issue: {$issue->getDescription()} in {$issue->getFilePath()}");
+            }
         }
 
         // 3. Validate build signatures
-        if (!artifact.IsSigned)
-        {
-            result.Errors.Add("Build artifact is not signed");
+        if (!$artifact->isSigned()) {
+            $result->addError("Build artifact is not signed");
         }
 
         // 4. Validate build environment
-        if (!artifact.BuildEnvironment.IsTrusted)
-        {
-            result.Errors.Add("Build was not performed in a trusted environment");
+        if (!$artifact->getBuildEnvironment()->isTrusted()) {
+            $result->addError("Build was not performed in a trusted environment");
         }
 
-        result.IsValid = !result.Errors.Any();
-        return result;
+        return $result;
     }
 }
 ```
@@ -443,8 +384,8 @@ public class BuildSecurityValidator
 ## Implementation Checklist
 
 1. **Code Integrity**
-   - Implement code signing for all assemblies
-   - Verify signatures before loading/executing code
+   - Implement code signing for critical files
+   - Verify signatures before deployment
    - Secure your build pipeline against tampering
 
 2. **Update Security**
@@ -458,7 +399,7 @@ public class BuildSecurityValidator
    - Protect data in transit and at rest
 
 4. **Secure Serialization**
-   - Avoid dangerous serialization formats
+   - Avoid unserializing user input
    - Implement strict type checking
    - Validate all deserialized data
 
@@ -471,3 +412,72 @@ public class BuildSecurityValidator
    - Implement integrity checks
    - Monitor for tampering attempts
    - Respond to integrity violations
+
+## PHP-Specific Recommendations
+
+1. **Secure File Uploads**
+   - Verify file signatures (not just extensions)
+   - Store uploads outside web root
+   - Disable PHP execution in upload directories
+
+2. **Composer Security**
+   - Use `composer audit` to check for vulnerabilities
+   - Prefer stable package versions
+   - Review dependency changes before updates
+
+3. **WordPress Specific**
+   - Verify plugin/theme checksums before installation
+   - Use signed updates from trusted sources
+   - Disable file editing in admin panel
+
+4. **Laravel Specific**
+   - Use signed URLs for sensitive actions
+   - Validate signed route parameters
+   - Protect against mass assignment
+
+5. **General PHP Security**
+   - Disable dangerous PHP functions
+   - Use `hash_equals()` for timing-safe comparisons
+   - Generate cryptographically secure random values
+
+## Example Secure Deployment Workflow
+
+```bash
+#!/bin/bash
+# Secure deployment script for PHP applications
+
+# 1. Verify git commit signature
+if ! git verify-commit HEAD; then
+    echo "Error: Invalid commit signature"
+    exit 1
+fi
+
+# 2. Verify Composer dependencies
+composer install --no-dev --prefer-dist --optimize-autoloader
+composer audit
+if [ $? -ne 0 ]; then
+    echo "Error: Vulnerable dependencies detected"
+    exit 1
+fi
+
+# 3. Verify build artifacts
+php artisan build:verify --signature=$BUILD_SIGNATURE
+if [ $? -ne 0 ]; then
+    echo "Error: Build verification failed"
+    exit 1
+fi
+
+# 4. Deploy to staging for final checks
+rsync -avz --checksum ./ user@staging:/var/www/app
+
+# 5. Run integration tests on staging
+ssh user@staging "cd /var/www/app && php artisan test"
+if [ $? -ne 0 ]; then
+    echo "Error: Staging tests failed"
+    exit 1
+fi
+
+# 6. Final production deployment
+rsync -avz --checksum ./ user@production:/var/www/app
+ssh user@production "cd /var/www/app && php artisan migrate --force"
+```
