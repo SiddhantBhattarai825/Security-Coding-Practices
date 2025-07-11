@@ -1,12 +1,12 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A02:2021 - Cryptographic Failures)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A02:2021 - Cryptographic Failures)
 
 ## Introduction to Cryptographic Failures
 
-Cryptographic failures (previously called "Sensitive Data Exposure") rank as the #2 security risk. This category focuses on failures related to cryptography which often lead to exposure of sensitive data or system compromise. In .NET APIs, we need to ensure proper handling of encryption, hashing, keys, and certificates.
+Cryptographic failures (previously called "Sensitive Data Exposure") rank as the #2 security risk in the OWASP Top 10. In PHP applications, we need to ensure proper handling of encryption, hashing, keys, and certificates to protect sensitive data.
 
-## Common Cryptographic Failures in .NET APIs
+## Common Cryptographic Failures in PHP Applications
 
-1. **Insecure or Deprecated Algorithms**
+1. **Insecure or Deprecated Algorithms** (MD5, SHA1, DES)
 2. **Improper Key Management**
 3. **Hardcoded Secrets**
 4. **Insufficient Entropy**
@@ -20,508 +20,421 @@ Cryptographic failures (previously called "Sensitive Data Exposure") rank as the
 
 #### Symmetric Encryption (AES)
 
-```csharp
-// Service for handling AES encryption
-public class AesEncryptionService
+```php
+// Laravel: Using OpenSSL for AES encryption
+class AesEncryptionService
 {
-    private readonly byte[] _key;
-    
-    public AesEncryptionService(IConfiguration configuration)
-    {
-        // Key should be 128, 192, or 256 bits (16, 24, or 32 bytes)
-        _key = Convert.FromBase64String(configuration["Encryption:Key"]);
-        
-        if (_key.Length != 16 && _key.Length != 24 && _key.Length != 32)
-            throw new ArgumentException("Invalid key size");
-    }
+    private $key;
+    private $cipher = 'aes-256-cbc';
 
-    public string Encrypt(string plainText)
+    public function __construct()
     {
-        using var aes = Aes.Create();
-        aes.Key = _key;
-        aes.GenerateIV(); // Important: Never reuse IV
+        $this->key = config('app.encryption_key');
         
-        using var encryptor = aes.CreateEncryptor();
-        using var ms = new MemoryStream();
-        
-        // Write IV first (unencrypted)
-        ms.Write(aes.IV, 0, aes.IV.Length);
-        
-        using (var cs = new CryptoStream(ms, encryptor, CryptoStreamMode.Write))
-        using (var sw = new StreamWriter(cs))
-        {
-            sw.Write(plainText);
+        if (strlen($this->key) !== 32) {
+            throw new InvalidArgumentException("Key must be 32 bytes for AES-256");
         }
-        
-        return Convert.ToBase64String(ms.ToArray());
     }
 
-    public string Decrypt(string cipherText)
+    public function encrypt($plainText)
     {
-        var buffer = Convert.FromBase64String(cipherText);
+        $iv = random_bytes(openssl_cipher_iv_length($this->cipher));
+        $cipherText = openssl_encrypt(
+            $plainText,
+            $this->cipher,
+            $this->key,
+            OPENSSL_RAW_DATA,
+            $iv
+        );
         
-        using var aes = Aes.Create();
-        aes.Key = _key;
+        // Combine IV and cipher text for storage
+        return base64_encode($iv . $cipherText);
+    }
+
+    public function decrypt($cipherText)
+    {
+        $data = base64_decode($cipherText);
+        $ivLength = openssl_cipher_iv_length($this->cipher);
+        $iv = substr($data, 0, $ivLength);
+        $cipherText = substr($data, $ivLength);
         
-        // Read IV from first 16 bytes
-        var iv = new byte[16];
-        Array.Copy(buffer, 0, iv, 0, iv.Length);
-        aes.IV = iv;
-        
-        using var decryptor = aes.CreateDecryptor();
-        using var ms = new MemoryStream();
-        using var cs = new CryptoStream(ms, decryptor, CryptoStreamMode.Write);
-        
-        // Write the rest of the ciphertext
-        cs.Write(buffer, iv.Length, buffer.Length - iv.Length);
-        cs.FlushFinalBlock();
-        
-        return Encoding.UTF8.GetString(ms.ToArray());
+        return openssl_decrypt(
+            $cipherText,
+            $this->cipher,
+            $this->key,
+            OPENSSL_RAW_DATA,
+            $iv
+        );
     }
 }
-```
 
-#### Asymmetric Encryption (RSA)
-
-```csharp
-public class RsaEncryptionService
-{
-    private readonly RSA _rsa;
-
-    public RsaEncryptionService(IConfiguration configuration)
-    {
-        _rsa = RSA.Create();
-        
-        // Load key from configuration (better to use certificate)
-        var keyXml = configuration["Encryption:RsaPrivateKey"];
-        _rsa.FromXmlString(keyXml);
+// WordPress: Similar approach but integrated with options API
+function wp_encrypt_data($data) {
+    $key = defined('ENCRYPTION_KEY') ? ENCRYPTION_KEY : '';
+    if (empty($key) || strlen($key) < 32) {
+        wp_die('Encryption key not properly configured');
     }
+    
+    $iv = random_bytes(openssl_cipher_iv_length('aes-256-cbc'));
+    $encrypted = openssl_encrypt($data, 'aes-256-cbc', $key, 0, $iv);
+    return base64_encode($iv . $encrypted);
+}
 
-    public string Encrypt(string plainText)
-    {
-        var bytes = Encoding.UTF8.GetBytes(plainText);
-        var encrypted = _rsa.Encrypt(bytes, RSAEncryptionPadding.OaepSHA256);
-        return Convert.ToBase64String(encrypted);
-    }
-
-    public string Decrypt(string cipherText)
-    {
-        var bytes = Convert.FromBase64String(cipherText);
-        var decrypted = _rsa.Decrypt(bytes, RSAEncryptionPadding.OaepSHA256);
-        return Encoding.UTF8.GetString(decrypted);
-    }
+function wp_decrypt_data($encrypted) {
+    $key = defined('ENCRYPTION_KEY') ? ENCRYPTION_KEY : '';
+    $data = base64_decode($encrypted);
+    $iv = substr($data, 0, 16);
+    $encrypted = substr($data, 16);
+    return openssl_decrypt($encrypted, 'aes-256-cbc', $key, 0, $iv);
 }
 ```
 
 ### 2. Secure Key Management
 
-```csharp
-// Program.cs - Using Azure Key Vault
-builder.Services.AddAzureKeyVault(
-    new Uri(builder.Configuration["KeyVault:VaultUri"]),
-    new DefaultAzureCredential());
+```php
+// Laravel: Using environment variables and key management services
+// .env file
+ENCRYPTION_KEY=base64:your_32_byte_base64_encoded_key_here
 
-// Key rotation service
-public class KeyRotationService : BackgroundService
+// For production, use AWS KMS or similar
+use Aws\Kms\KmsClient;
+
+class KmsEncryptionService
 {
-    private readonly IKeyVaultClient _keyVaultClient;
-    private readonly IConfiguration _configuration;
-    
-    public KeyRotationService(IKeyVaultClient keyVaultClient, IConfiguration configuration)
+    private $kmsClient;
+    private $keyId;
+
+    public function __construct()
     {
-        _keyVaultClient = keyVaultClient;
-        _configuration = configuration;
+        $this->kmsClient = new KmsClient([
+            'region' => config('services.kms.region'),
+            'version' => 'latest',
+            'credentials' => [
+                'key' => config('services.kms.key'),
+                'secret' => config('services.kms.secret'),
+            ]
+        ]);
+        $this->keyId = config('services.kms.key_id');
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    public function encrypt($data)
     {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            // Rotate keys every 30 days
-            await Task.Delay(TimeSpan.FromDays(30), stoppingToken);
-            
-            try
-            {
-                var newKey = await _keyVaultClient.CreateKeyAsync(
-                    _configuration["KeyVault:KeyName"],
-                    KeyType.Rsa,
-                    new KeyCreateOptions
-                    {
-                        KeySize = 2048,
-                        Expires = DateTimeOffset.Now.AddDays(90)
-                    });
-                
-                // Update configuration
-                _configuration["Encryption:RsaPublicKey"] = newKey.Key.ToXmlString(false);
-            }
-            catch (Exception ex)
-            {
-                // Log and retry
-            }
-        }
+        $result = $this->kmsClient->encrypt([
+            'KeyId' => $this->keyId,
+            'Plaintext' => $data,
+        ]);
+        
+        return base64_encode($result['CiphertextBlob']);
+    }
+
+    public function decrypt($encrypted)
+    {
+        $result = $this->kmsClient->decrypt([
+            'CiphertextBlob' => base64_decode($encrypted),
+        ]);
+        
+        return $result['Plaintext'];
     }
 }
+
+// WordPress: Using constants in wp-config.php
+// wp-config.php
+define('ENCRYPTION_KEY', 'your_32_byte_secret_key_here'); // Generate a proper key
 ```
 
-### 3. Secure Password Hashing (Argon2 or PBKDF2)
+### 3. Secure Password Hashing
 
-```csharp
-// Using the libsodium-net library for Argon2
-public class PasswordHasher
-{
-    public string HashPassword(string password)
-    {
-        // Generate a 16-byte salt
-        var salt = Sodium.PasswordHash.ArgonGenerateSalt();
-        
-        // Hash with Argon2id (recommended parameters)
-        var hash = Sodium.PasswordHash.ArgonHashString(
-            password,
-            salt,
-            opsLimit: Sodium.PasswordHash.ArgonOpsLimitInteractive,
-            memLimit: Sodium.PasswordHash.ArgonMemLimitInteractive);
-            
-        return hash;
-    }
+```php
+// Laravel: Built-in password hashing (uses bcrypt)
+$hashedPassword = Hash::make('plain-text-password');
 
-    public bool VerifyPassword(string hashedPassword, string password)
-    {
-        return Sodium.PasswordHash.ArgonHashStringVerify(hashedPassword, password);
-    }
+// Verify password
+if (Hash::check('plain-text-password', $hashedPassword)) {
+    // Password matches
 }
 
-// Alternative using PBKDF2 (built into .NET)
-public class Pbkdf2PasswordHasher
-{
-    private const int SaltSize = 16; // 128 bits
-    private const int HashSize = 32; // 256 bits
-    private const int Iterations = 100000;
+// WordPress: Using wp_hash_password() and wp_check_password()
+$hashed = wp_hash_password($password);
+$check = wp_check_password($password, $hashed);
 
-    public string HashPassword(string password)
-    {
-        // Generate salt
-        using var rng = RandomNumberGenerator.Create();
-        var salt = new byte[SaltSize];
-        rng.GetBytes(salt);
-        
-        // Generate hash
-        using var pbkdf2 = new Rfc2898DeriveBytes(password, salt, Iterations, HashAlgorithmName.SHA256);
-        var hash = pbkdf2.GetBytes(HashSize);
-        
-        // Combine salt and hash
-        var hashBytes = new byte[SaltSize + HashSize];
-        Array.Copy(salt, 0, hashBytes, 0, SaltSize);
-        Array.Copy(hash, 0, hashBytes, SaltSize, HashSize);
-        
-        return Convert.ToBase64String(hashBytes);
+// For custom applications (PHP native)
+function hash_password($password) {
+    // Use Argon2 if available (PHP 7.2+)
+    if (defined('PASSWORD_ARGON2ID')) {
+        return password_hash($password, PASSWORD_ARGON2ID);
     }
+    // Fallback to bcrypt
+    return password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+}
 
-    public bool VerifyPassword(string hashedPassword, string password)
-    {
-        // Extract bytes
-        var hashBytes = Convert.FromBase64String(hashedPassword);
-        
-        // Get salt
-        var salt = new byte[SaltSize];
-        Array.Copy(hashBytes, 0, salt, 0, SaltSize);
-        
-        // Compute hash
-        using var pbkdf2 = new Rfc2898DeriveBytes(password, salt, Iterations, HashAlgorithmName.SHA256);
-        var hash = pbkdf2.GetBytes(HashSize);
-        
-        // Compare
-        for (var i = 0; i < HashSize; i++)
-        {
-            if (hashBytes[i + SaltSize] != hash[i])
-                return false;
-        }
-        
-        return true;
-    }
+function verify_password($password, $hash) {
+    return password_verify($password, $hash);
 }
 ```
 
 ### 4. Secure Random Number Generation
 
-```csharp
-// Proper random number generation
-public class SecureRandomGenerator
-{
-    public int GenerateSecureRandom(int minValue, int maxValue)
-    {
-        if (minValue >= maxValue)
-            throw new ArgumentException("minValue must be less than maxValue");
-            
-        using var rng = RandomNumberGenerator.Create();
-        var bytes = new byte[4];
-        rng.GetBytes(bytes);
-        
-        // Convert to positive integer
-        var randomValue = Math.Abs(BitConverter.ToInt32(bytes, 0));
-        
-        // Scale to range
-        return minValue + (randomValue % (maxValue - minValue));
-    }
-
-    public string GenerateSecureToken(int length)
-    {
-        const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._";
-        using var rng = RandomNumberGenerator.Create();
-        var data = new byte[length];
-        rng.GetBytes(data);
-        
-        var result = new StringBuilder(length);
-        foreach (var b in data)
-        {
-            result.Append(chars[b % chars.Length]);
-        }
-        
-        return result.ToString();
-    }
+```php
+// Laravel and WordPress: Using random_bytes() or openssl_random_pseudo_bytes()
+function generate_secure_token($length = 32) {
+    return bin2hex(random_bytes($length));
 }
+
+function generate_csrf_token() {
+    if (function_exists('random_bytes')) {
+        return bin2hex(random_bytes(32));
+    }
+    if (function_exists('openssl_random_pseudo_bytes')) {
+        return bin2hex(openssl_random_pseudo_bytes(32));
+    }
+    // Last resort - not cryptographically secure!
+    return md5(uniqid(mt_rand(), true));
+}
+
+// Laravel helper
+$random = Str::random(32);
 ```
 
 ### 5. Secure Certificate Validation
 
-```csharp
-// Custom certificate validation for HttpClient
-public class CertificateValidationHandler : HttpClientHandler
-{
-    private readonly string _thumbprint;
+```php
+// Laravel: Guzzle HTTP client with certificate verification
+$client = new GuzzleHttp\Client([
+    'verify' => true, // Enable SSL verification
+    'cert' => '/path/to/cert.pem',
+    'ssl_key' => ['/path/to/key.pem', 'passphrase']
+]);
 
-    public CertificateValidationHandler(string thumbprint)
-    {
-        _thumbprint = thumbprint;
-        ServerCertificateCustomValidationCallback = ValidateCertificate;
-    }
+// WordPress: WP_Http class with SSL verification
+add_filter('https_ssl_verify', '__return_true');
+add_filter('https_local_ssl_verify', '__return_true');
 
-    private bool ValidateCertificate(HttpRequestMessage request, 
-                                   X509Certificate2 cert, 
-                                   X509Chain chain, 
-                                   SslPolicyErrors errors)
-    {
-        // Check for basic SSL policy errors
-        if (errors != SslPolicyErrors.None)
-            return false;
-            
-        // Verify thumbprint matches expected
-        return string.Equals(
-            cert.Thumbprint,
-            _thumbprint,
-            StringComparison.OrdinalIgnoreCase);
-    }
+// Custom cURL with certificate pinning
+function curl_with_pinning($url) {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+    curl_setopt($ch, CURLOPT_CAINFO, '/path/to/cacert.pem');
+    
+    // Certificate pinning
+    curl_setopt($ch, CURLOPT_PINNEDPUBLICKEY, 'sha256//your-public-key-hash');
+    
+    $response = curl_exec($ch);
+    curl_close($ch);
+    return $response;
 }
-
-// Usage
-var handler = new CertificateValidationHandler("A909502DD82AE41433E6F83886B00D4277A32A7B");
-var httpClient = new HttpClient(handler);
 ```
 
 ### 6. Protecting Sensitive Data in Configuration
 
-```csharp
-// Using Azure App Configuration with Key Vault references
-builder.Configuration.AddAzureAppConfiguration(options =>
-{
-    options.Connect(builder.Configuration["ConnectionStrings:AppConfig"])
-           .ConfigureKeyVault(kv =>
-           {
-               kv.SetCredential(new DefaultAzureCredential());
-           });
-});
+```php
+// Laravel: Environment variables and encrypted configuration
+// .env file
+DB_PASSWORD=your_db_password
+API_SECRET=your_api_secret
 
-// Using Data Protection API for local secrets
-builder.Services.AddDataProtection()
-    .PersistKeysToAzureBlobStorage(new Uri(builder.Configuration["DataProtection:BlobUri"]))
-    .ProtectKeysWithAzureKeyVault(
-        new Uri(builder.Configuration["KeyVault:KeyIdentifier"]),
-        new DefaultAzureCredential());
+// Access in code
+$dbPassword = env('DB_PASSWORD');
+
+// For highly sensitive data, use encrypted values
+php artisan encrypt:secret
+// Then store in .env as encrypted
+
+// WordPress: wp-config.php best practices
+// wp-config.php
+define('DB_PASSWORD', 'your_db_password');
+
+// Move wp-config.php above web root
+// Set proper permissions (400 or 440)
 ```
 
 ### 7. Secure JWT Token Handling
 
-```csharp
-// JWT configuration with strong security settings
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidateAudience = true,
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            ValidateLifetime = true,
-            RequireExpirationTime = true,
-            ClockSkew = TimeSpan.Zero, // No tolerance for expired tokens
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new X509SecurityKey(
-                new X509Certificate2(
-                    builder.Configuration["Jwt:CertificatePath"],
-                    builder.Configuration["Jwt:CertificatePassword"]))
-        };
-        
-        // Additional security
-        options.RequireHttpsMetadata = true;
-        options.SaveToken = false; // Don't store token in AuthenticationProperties
-    });
+```php
+// Laravel: Using tymon/jwt-auth package
+// config/jwt.php
+return [
+    'secret' => env('JWT_SECRET'),
+    'algo' => 'HS256',
+    'keys' => [
+        'public' => env('JWT_PUBLIC_KEY'),
+        'private' => env('JWT_PRIVATE_KEY'),
+        'passphrase' => env('JWT_PASSPHRASE'),
+    ],
+    // Other config
+];
+
+// WordPress: Using JWT plugins or custom implementation
+function generate_jwt_token($user_id) {
+    $secret_key = defined('JWT_AUTH_SECRET_KEY') ? JWT_AUTH_SECRET_KEY : '';
+    $issued_at = time();
+    $expiration = $issued_at + (DAY_IN_SECONDS * 7); // Token valid for 7 days
+    
+    $payload = [
+        'iss' => get_bloginfo('url'),
+        'iat' => $issued_at,
+        'nbf' => $issued_at,
+        'exp' => $expiration,
+        'data' => [
+            'user' => [
+                'id' => $user_id,
+            ],
+        ],
+    ];
+    
+    return \Firebase\JWT\JWT::encode($payload, $secret_key, 'HS256');
+}
+
+function validate_jwt_token($token) {
+    try {
+        $secret_key = defined('JWT_AUTH_SECRET_KEY') ? JWT_AUTH_SECRET_KEY : '';
+        $decoded = \Firebase\JWT\JWT::decode($token, $secret_key, ['HS256']);
+        return $decoded->data->user->id;
+    } catch (Exception $e) {
+        return false;
+    }
+}
 ```
 
 ## Testing Cryptographic Implementations
 
-```csharp
-[Fact]
-public void AesEncryption_Decrypts_WhatItEncrypts()
+```php
+// PHPUnit tests for Laravel
+class EncryptionTest extends TestCase
 {
-    // Arrange
-    var config = new ConfigurationBuilder()
-        .AddInMemoryCollection(new Dictionary<string, string>
-        {
-            ["Encryption:Key"] = Convert.ToBase64String(new byte[] { 
-                // 256-bit key
-                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-                0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10,
-                0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-                0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20
-            })
-        }.Build());
+    public function test_aes_encryption_decryption()
+    {
+        $service = new AesEncryptionService();
+        $original = 'Sensitive data';
+        
+        $encrypted = $service->encrypt($original);
+        $decrypted = $service->decrypt($encrypted);
+        
+        $this->assertEquals($original, $decrypted);
+        $this->assertNotEquals($original, $encrypted);
+    }
     
-    var service = new AesEncryptionService(config);
-    var original = "Sensitive data";
-    
-    // Act
-    var encrypted = service.Encrypt(original);
-    var decrypted = service.Decrypt(encrypted);
-    
-    // Assert
-    Assert.Equal(original, decrypted);
+    public function test_password_hashing()
+    {
+        $password = 'SecurePassword123!';
+        $wrongPassword = 'WrongPassword456?';
+        
+        $hashed = hash_password($password);
+        $verifyCorrect = verify_password($password, $hashed);
+        $verifyWrong = verify_password($wrongPassword, $hashed);
+        
+        $this->assertTrue($verifyCorrect);
+        $this->assertFalse($verifyWrong);
+    }
 }
 
-[Fact]
-public void PasswordHasher_Verifies_CorrectPassword()
+// WordPress: PHPUnit tests for custom functions
+class WpCryptographyTest extends WP_UnitTestCase
 {
-    // Arrange
-    var hasher = new PasswordHasher();
-    var password = "SecurePassword123!";
+    public function test_wp_encryption_functions()
+    {
+        $original = 'Test data';
+        $encrypted = wp_encrypt_data($original);
+        $decrypted = wp_decrypt_data($encrypted);
+        
+        $this->assertEquals($original, $decrypted);
+        $this->assertNotEquals($original, $encrypted);
+    }
     
-    // Act
-    var hash = hasher.HashPassword(password);
-    var result = hasher.VerifyPassword(hash, password);
-    
-    // Assert
-    Assert.True(result);
-}
-
-[Fact]
-public void PasswordHasher_Rejects_IncorrectPassword()
-{
-    // Arrange
-    var hasher = new PasswordHasher();
-    var password = "SecurePassword123!";
-    var wrongPassword = "WrongPassword456?";
-    
-    // Act
-    var hash = hasher.HashPassword(password);
-    var result = hasher.VerifyPassword(hash, wrongPassword);
-    
-    // Assert
-    Assert.False(result);
+    public function test_jwt_token_generation()
+    {
+        $user_id = $this->factory->user->create();
+        $token = generate_jwt_token($user_id);
+        $decoded_id = validate_jwt_token($token);
+        
+        $this->assertEquals($user_id, $decoded_id);
+    }
 }
 ```
 
 ## Monitoring and Logging Cryptographic Operations
 
-```csharp
-// Audit logging for cryptographic operations
-public class CryptographicAuditLogger
+```php
+// Laravel: Logging encryption operations
+class AuditedEncryptionService
 {
-    private readonly ILogger<CryptographicAuditLogger> _logger;
-    
-    public CryptographicAuditLogger(ILogger<CryptographicAuditLogger> logger)
+    protected $encryptor;
+    protected $logger;
+
+    public function __construct(AesEncryptionService $encryptor, LoggerInterface $logger)
     {
-        _logger = logger;
+        $this->encryptor = $encryptor;
+        $this->logger = $logger;
     }
-    
-    public void LogEncryptionOperation(string operation, string keyId, bool success)
+
+    public function encrypt($data)
     {
-        _logger.LogInformation("Crypto operation {Operation} with key {KeyId} - Success: {Success}",
-            operation,
-            keyId,
-            success);
-            
-        if (!success)
-        {
-            _logger.LogWarning("Failed crypto operation detected");
-            // Alert security team
+        try {
+            $result = $this->encryptor->encrypt($data);
+            $this->logger->info('Data encrypted successfully', ['length' => strlen($data)]);
+            return $result;
+        } catch (Exception $e) {
+            $this->logger->error('Encryption failed', ['error' => $e->getMessage()]);
+            throw $e;
         }
-    }
-    
-    public void LogKeyRotation(string keyId, string operation)
-    {
-        _logger.LogInformation("Key rotation {Operation} for key {KeyId}",
-            operation,
-            keyId);
     }
 }
 
-// Example usage in encryption service
-public class AuditedEncryptionService
-{
-    private readonly AesEncryptionService _encryptionService;
-    private readonly CryptographicAuditLogger _auditLogger;
-    
-    public AuditedEncryptionService(AesEncryptionService encryptionService, 
-                                  CryptographicAuditLogger auditLogger)
-    {
-        _encryptionService = encryptionService;
-        _auditLogger = auditLogger;
-    }
-    
-    public string Encrypt(string plainText)
-    {
-        try
-        {
-            var result = _encryptionService.Encrypt(plainText);
-            _auditLogger.LogEncryptionOperation("Encrypt", "AES-256", true);
-            return result;
-        }
-        catch
-        {
-            _auditLogger.LogEncryptionOperation("Encrypt", "AES-256", false);
-            throw;
-        }
-    }
-}
+// WordPress: Action hooks for security logging
+add_action('wp_login_failed', function($username) {
+    error_log('Failed login attempt for username: ' . $username);
+});
+
+add_action('password_reset', function($user, $new_pass) {
+    error_log('Password reset for user ID: ' . $user->ID);
+}, 10, 2);
 ```
 
-## Best Practices Summary
+## Best Practices Summary for PHP
 
-1. **Always use standard, vetted cryptographic libraries** - Never implement your own crypto
-2. **Use appropriate algorithms**:
-   - Symmetric: AES (128-bit or higher)
-   - Asymmetric: RSA (2048-bit or higher) or ECC (256-bit or higher)
-   - Hashing: SHA-2 or SHA-3 family (SHA256, SHA512, etc.)
-   - Password hashing: Argon2, PBKDF2, bcrypt
-3. **Proper key management**:
-   - Store keys in secure key vaults (Azure Key Vault, AWS KMS, etc.)
-   - Implement key rotation policies
-   - Never hardcode keys in source code
-4. **Use proper random number generation**:
-   - `RandomNumberGenerator` for crypto purposes
-   - Never use `System.Random` for security-related randomness
-5. **Secure configuration**:
-   - Use secure storage for secrets
-   - Encrypt sensitive configuration values
-6. **Certificate validation**:
-   - Always validate certificates
-   - Pin certificates when possible
-7. **Password handling**:
-   - Use strong, adaptive hashing algorithms
-   - Add salt to every hash
-   - Use high iteration counts/work factors
-8. **Audit and monitor**:
-   - Log cryptographic operations
-   - Alert on failures
-9. **Stay updated**:
-   - Monitor for deprecated algorithms
-   - Update libraries regularly
+1. **Use modern, vetted cryptographic libraries**:
+   - OpenSSL for encryption
+   - password_hash()/password_verify() for password hashing
+   - random_bytes() for secure randomness
+
+2. **Choose appropriate algorithms**:
+   - Encryption: AES-256-CBC or AES-256-GCM
+   - Password hashing: Argon2id (PHP 7.2+), bcrypt
+   - Hashing: SHA-256 or SHA-3
+
+3. **Secure key management**:
+   - Store keys in environment variables (not in code)
+   - Use services like AWS KMS for production
+   - Rotate keys periodically
+
+4. **Proper configuration**:
+   - Set appropriate permissions on config files
+   - Move sensitive files outside web root
+   - Use HTTPS everywhere
+
+5. **Input validation and output encoding**:
+   - Always validate before processing
+   - Escape output to prevent XSS
+
+6. **Secure session management**:
+   - Use secure and HttpOnly flags for cookies
+   - Regenerate session IDs after login
+
+7. **Regular updates**:
+   - Keep PHP and all libraries updated
+   - Monitor for security advisories
+
+8. **Framework-specific recommendations**:
+   - **Laravel**: Use built-in security features (CSRF protection, encryption, hashing)
+   - **WordPress**: Follow WordPress coding standards, use nonces, validate/sanitize all inputs
+
+9. **Audit and monitor**:
+   - Log security-relevant events
+   - Implement intrusion detection
+   - Regular security audits
+
+10. **Disable dangerous functions**:
+    - In php.ini: disable exec, system, passthru, etc.
+    - Use open_basedir restriction
