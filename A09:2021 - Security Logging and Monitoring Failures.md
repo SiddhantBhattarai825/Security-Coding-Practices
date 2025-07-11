@@ -1,107 +1,87 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A09:2021 - Security Logging and Monitoring Failures)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A09:2021 - Security Logging and Monitoring Failures)
 
 ## Comprehensive Security Monitoring Framework
 
 ### 1. Centralized Security Event Logging
 
-#### Structured Logging Service Implementation
+#### Structured Logging Implementation
 
-```csharp
-public class SecurityEventLogger : ISecurityEventLogger
+```php
+class SecurityEventLogger
 {
-    private readonly ILogger<SecurityEventLogger> _logger;
-    private readonly IEventAggregator _eventAggregator;
-    private readonly IHttpContextAccessor _httpContextAccessor;
+    private $logger;
+    private $eventDispatcher;
 
-    public SecurityEventLogger(
-        ILogger<SecurityEventLogger> logger,
-        IEventAggregator eventAggregator,
-        IHttpContextAccessor httpContextAccessor)
-    {
-        _logger = logger;
-        _eventAggregator = eventAggregator;
-        _httpContextAccessor = httpContextAccessor;
+    public function __construct(
+        LoggerInterface $logger,
+        EventDispatcherInterface $eventDispatcher
+    ) {
+        $this->logger = $logger;
+        $this->eventDispatcher = $eventDispatcher;
     }
 
-    public void LogSecurityEvent(SecurityEvent securityEvent)
+    public function logSecurityEvent(SecurityEvent $event): void
     {
-        try
-        {
+        try {
             // Enrich with contextual information
-            securityEvent.Timestamp = DateTime.UtcNow;
-            securityEvent.CorrelationId = GetCorrelationId();
-            securityEvent.IpAddress = GetIpAddress();
-            securityEvent.UserAgent = GetUserAgent();
-            securityEvent.UserId = GetUserId();
+            $event->setTimestamp(new DateTime());
+            $event->setIpAddress($this->getIpAddress());
+            $event->setUserAgent($this->getUserAgent());
+            $event->setUserId($this->getUserId());
 
-            // Structured logging with Serilog
-            _logger.LogInformation("Security event: {@SecurityEvent}", securityEvent);
+            // Structured logging
+            $this->logger->info('Security event', [
+                'event' => $event->getType(),
+                'severity' => $event->getSeverity(),
+                'details' => $event->getDetails(),
+                'ip' => $event->getIpAddress(),
+                'user' => $event->getUserId(),
+                'timestamp' => $event->getTimestamp()->format(DateTime::ATOM)
+            ]);
 
-            // Publish to event bus for real-time processing
-            _eventAggregator.Publish(new SecurityEventNotification(securityEvent));
+            // Dispatch for real-time processing
+            $this->eventDispatcher->dispatch(
+                new SecurityEventNotification($event)
+            );
+        } catch (Exception $e) {
+            $this->logger->error('Failed to log security event', [
+                'error' => $e->getMessage()
+            ]);
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to log security event");
-        }
     }
 
-    public void LogAuthenticationEvent(AuthenticationEvent authEvent)
+    public function logAuthenticationEvent(AuthenticationEvent $authEvent): void
     {
-        var securityEvent = new SecurityEvent
-        {
-            EventType = authEvent.Success ? "AuthenticationSuccess" : "AuthenticationFailure",
-            Severity = authEvent.Success ? SecurityEventSeverity.Information : SecurityEventSeverity.Warning,
-            Details = new
-            {
-                authEvent.Username,
-                authEvent.AuthenticationMethod,
-                authEvent.FailureReason
-            }
-        };
+        $securityEvent = new SecurityEvent(
+            $authEvent->isSuccess() ? 'AuthenticationSuccess' : 'AuthenticationFailure',
+            $authEvent->isSuccess() ? SecurityEventSeverity::INFO : SecurityEventSeverity::WARNING,
+            [
+                'username' => $authEvent->getUsername(),
+                'method' => $authEvent->getMethod(),
+                'reason' => $authEvent->getFailureReason()
+            ]
+        );
 
-        LogSecurityEvent(securityEvent);
+        $this->logSecurityEvent($securityEvent);
     }
 
-    public void LogAuthorizationEvent(AuthorizationEvent authzEvent)
+    private function getIpAddress(): string
     {
-        var securityEvent = new SecurityEvent
-        {
-            EventType = authzEvent.Success ? "AuthorizationSuccess" : "AuthorizationFailure",
-            Severity = authzEvent.Success ? SecurityEventSeverity.Information : SecurityEventSeverity.Warning,
-            Details = new
-            {
-                authzEvent.UserId,
-                authzEvent.Resource,
-                authzEvent.Action,
-                authzEvent.DeniedReason
-            }
-        };
-
-        LogSecurityEvent(securityEvent);
+        return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
     }
 
-    private string GetCorrelationId()
+    private function getUserAgent(): string
     {
-        return _httpContextAccessor.HttpContext?
-            .Request.Headers["X-Correlation-ID"].FirstOrDefault() ?? Guid.NewGuid().ToString();
+        return $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
     }
 
-    private string GetIpAddress()
+    private function getUserId(): string
     {
-        return _httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-    }
-
-    private string GetUserAgent()
-    {
-        return _httpContextAccessor.HttpContext?
-            .Request.Headers["User-Agent"].FirstOrDefault() ?? "unknown";
-    }
-
-    private string GetUserId()
-    {
-        return _httpContextAccessor.HttpContext?.User?
-            .FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "anonymous";
+        // Laravel example:
+        // return auth()->id() ?? 'anonymous';
+        
+        // WordPress example:
+        // return get_current_user_id() ?: 'anonymous';
     }
 }
 ```
@@ -110,111 +90,95 @@ public class SecurityEventLogger : ISecurityEventLogger
 
 #### Anomaly Detection Service
 
-```csharp
-public class AnomalyDetectionService : IHostedService
+```php
+class AnomalyDetectionService
 {
-    private readonly ISecurityEventQueue _eventQueue;
-    private readonly IEnumerable<IAnomalyDetector> _detectors;
-    private readonly ILogger<AnomalyDetectionService> _logger;
-    private Timer _timer;
+    private $eventQueue;
+    private $detectors;
+    private $logger;
 
-    public AnomalyDetectionService(
-        ISecurityEventQueue eventQueue,
-        IEnumerable<IAnomalyDetector> detectors,
-        ILogger<AnomalyDetectionService> logger)
-    {
-        _eventQueue = eventQueue;
-        _detectors = detectors;
-        _logger = logger;
+    public function __construct(
+        SecurityEventQueue $eventQueue,
+        iterable $detectors,
+        LoggerInterface $logger
+    ) {
+        $this->eventQueue = $eventQueue;
+        $this->detectors = $detectors;
+        $this->logger = $logger;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public function processEvents(): void
     {
-        _timer = new Timer(ProcessEvents, null, TimeSpan.Zero, TimeSpan.FromSeconds(30));
-        return Task.CompletedTask;
-    }
+        try {
+            $events = $this->eventQueue->dequeueRecentEvents();
+            if (empty($events)) {
+                return;
+            }
 
-    private void ProcessEvents(object state)
-    {
-        try
-        {
-            var events = _eventQueue.DequeueRecentEvents();
-            if (!events.Any()) return;
-
-            Parallel.ForEach(_detectors, detector =>
-            {
-                try
-                {
-                    var anomalies = detector.Detect(events);
-                    foreach (var anomaly in anomalies)
-                    {
-                        _logger.LogWarning("Security anomaly detected: {AnomalyType}", anomaly.Type);
-                        AlertSecurityTeam(anomaly);
+            foreach ($this->detectors as $detector) {
+                try {
+                    $anomalies = $detector->detect($events);
+                    foreach ($anomalies as $anomaly) {
+                        $this->logger->warning('Security anomaly detected', [
+                            'type' => $anomaly->getType()
+                        ]);
+                        $this->alertSecurityTeam($anomaly);
                     }
+                } catch (Exception $e) {
+                    $this->logger->error('Anomaly detector failed', [
+                        'error' => $e->getMessage()
+                    ]);
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Anomaly detector failed");
-                }
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Anomaly detection processing failed");
+            }
+        } catch (Exception $e) {
+            $this->logger->error('Anomaly detection processing failed', [
+                'error' => $e->getMessage()
+            ]);
         }
     }
 
-    private void AlertSecurityTeam(SecurityAnomaly anomaly)
+    private function alertSecurityTeam(SecurityAnomaly $anomaly): void
     {
-        // Implementation to notify security team via preferred channels
-        // (email, Slack, PagerDuty, etc.)
-    }
-
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        _timer?.Dispose();
-        return Task.CompletedTask;
+        // Implementation to notify security team
     }
 }
 
-// Example detector for brute force attacks
-public class BruteForceDetector : IAnomalyDetector
+// Example Brute Force Detector
+class BruteForceDetector
 {
-    private readonly ILogger<BruteForceDetector> _logger;
-
-    public BruteForceDetector(ILogger<BruteForceDetector> logger)
+    public function detect(array $events): array
     {
-        _logger = logger;
-    }
+        $failedAuths = array_filter($events, function($e) {
+            return $e->getType() === 'AuthenticationFailure';
+        });
 
-    public IEnumerable<SecurityAnomaly> Detect(IEnumerable<SecurityEvent> events)
-    {
-        var failedAuths = events
-            .Where(e => e.EventType == "AuthenticationFailure")
-            .GroupBy(e => e.Details.Username)
-            .Where(g => g.Count() > 5)
-            .ToList();
-
-        foreach (var group in failedAuths)
-        {
-            _logger.LogWarning(
-                "Possible brute force attack against account {Username} - {Count} attempts",
-                group.Key, group.Count());
-
-            yield return new SecurityAnomaly
-            {
-                Type = "BruteForceAttempt",
-                Severity = SecurityAnomalySeverity.High,
-                Details = new
-                {
-                    Username = group.Key,
-                    AttemptCount = group.Count(),
-                    FirstAttempt = group.Min(e => e.Timestamp),
-                    LastAttempt = group.Max(e => e.Timestamp),
-                    IpAddresses = group.Select(e => e.IpAddress).Distinct()
-                }
-            };
+        $grouped = [];
+        foreach ($failedAuths as $event) {
+            $username = $event->getDetails()['username'] ?? 'unknown';
+            if (!isset($grouped[$username])) {
+                $grouped[$username] = [];
+            }
+            $grouped[$username][] = $event;
         }
+
+        $anomalies = [];
+        foreach ($grouped as $username => $events) {
+            if (count($events) > 5) {
+                $anomalies[] = new SecurityAnomaly(
+                    'BruteForceAttempt',
+                    SecurityAnomalySeverity::HIGH,
+                    [
+                        'username' => $username,
+                        'attempts' => count($events),
+                        'first' => min(array_map(fn($e) => $e->getTimestamp(), $events)),
+                        'last' => max(array_map(fn($e) => $e->getTimestamp(), $events)),
+                        'ips' => array_unique(array_map(fn($e) => $e->getIpAddress(), $events))
+                    ]
+                );
+            }
+        }
+
+        return $anomalies;
     }
 }
 ```
@@ -223,107 +187,103 @@ public class BruteForceDetector : IAnomalyDetector
 
 #### Comprehensive Audit Service
 
-```csharp
-public class AuditService : IAuditService
+```php
+class AuditService
 {
-    private readonly IAuditRepository _repository;
-    private readonly IHttpContextAccessor _httpContextAccessor;
-    private readonly ILogger<AuditService> _logger;
+    private $repository;
+    private $logger;
 
-    public AuditService(
-        IAuditRepository repository,
-        IHttpContextAccessor httpContextAccessor,
-        ILogger<AuditService> logger)
-    {
-        _repository = repository;
-        _httpContextAccessor = httpContextAccessor;
-        _logger = logger;
+    public function __construct(
+        AuditRepository $repository,
+        LoggerInterface $logger
+    ) {
+        $this->repository = $repository;
+        $this->logger = $logger;
     }
 
-    public async Task RecordActionAsync(AuditAction action, object target, string description)
-    {
-        try
-        {
-            var auditRecord = new AuditRecord
-            {
-                Timestamp = DateTime.UtcNow,
-                Action = action.ToString(),
-                UserId = GetCurrentUserId(),
-                IpAddress = GetIpAddress(),
-                UserAgent = GetUserAgent(),
-                TargetType = target.GetType().Name,
-                TargetId = GetTargetId(target),
-                Description = description,
-                Details = JsonSerializer.Serialize(target)
-            };
+    public function recordAction(
+        string $action,
+        $target,
+        string $description
+    ): void {
+        try {
+            $record = new AuditRecord(
+                new DateTime(),
+                $action,
+                $this->getCurrentUserId(),
+                $this->getIpAddress(),
+                $this->getUserAgent(),
+                is_object($target) ? get_class($target) : gettype($target),
+                $this->getTargetId($target),
+                $description,
+                json_encode($target)
+            );
 
-            await _repository.AddAsync(auditRecord);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to record audit action");
+            $this->repository->add($record);
+        } catch (Exception $e) {
+            $this->logger->error('Failed to record audit action', [
+                'error' => $e->getMessage()
+            ]);
         }
     }
 
-    public async Task<IEnumerable<AuditRecord>> QueryAsync(AuditQuery query)
+    public function query(AuditQuery $query): array
     {
-        try
-        {
-            return await _repository.QueryAsync(query);
+        try {
+            return $this->repository->query($query);
+        } catch (Exception $e) {
+            $this->logger->error('Audit query failed', [
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
         }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Audit query failed");
-            throw;
+    }
+
+    private function getCurrentUserId(): string
+    {
+        // Laravel: return auth()->id() ?? 'system';
+        // WordPress: return get_current_user_id() ?: 'system';
+    }
+
+    private function getIpAddress(): string
+    {
+        return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+    }
+
+    private function getUserAgent(): string
+    {
+        return $_SERVER['HTTP_USER_AGENT'] ?? 'unknown';
+    }
+
+    private function getTargetId($target): string
+    {
+        if (is_object($target) && method_exists($target, 'getId')) {
+            return $target->getId();
         }
-    }
-
-    private string GetCurrentUserId()
-    {
-        return _httpContextAccessor.HttpContext?.User?
-            .FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "system";
-    }
-
-    private string GetIpAddress()
-    {
-        return _httpContextAccessor.HttpContext?.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-    }
-
-    private string GetUserAgent()
-    {
-        return _httpContextAccessor.HttpContext?.Request.Headers["User-Agent"].ToString() ?? "unknown";
-    }
-
-    private string GetTargetId(object target)
-    {
-        return target switch
-        {
-            IHasId entity => entity.Id.ToString(),
-            _ => target.GetHashCode().ToString()
-        };
+        return (string) spl_object_hash($target);
     }
 }
 
-// Example usage in controllers
-[HttpPut("users/{id}")]
-[Authorize(Roles = "Admin")]
-public async Task<IActionResult> UpdateUser(string id, [FromBody] UserUpdateDto updateDto)
+// Example usage in Laravel controller
+public function updateUser(Request $request, $id)
 {
-    var existingUser = await _userService.GetByIdAsync(id);
+    $user = User::findOrFail($id);
     
-    await _auditService.RecordActionAsync(
-        AuditAction.Update, 
-        existingUser, 
-        $"User update initiated by {User.Identity.Name}");
+    $this->auditService->recordAction(
+        'update',
+        $user,
+        "User update initiated by " . auth()->user()->name
+    );
     
-    var updatedUser = await _userService.UpdateAsync(id, updateDto);
+    $user->update($request->all());
     
-    await _auditService.RecordActionAsync(
-        AuditAction.Update, 
-        updatedUser, 
-        $"User update completed by {User.Identity.Name}");
+    $this->auditService->recordAction(
+        'update',
+        $user,
+        "User update completed by " . auth()->user()->name
+    );
     
-    return Ok(updatedUser);
+    return response()->json($user);
 }
 ```
 
@@ -331,94 +291,89 @@ public async Task<IActionResult> UpdateUser(string id, [FromBody] UserUpdateDto 
 
 #### Multi-Channel Alerting Service
 
-```csharp
-public class SecurityAlertService : ISecurityAlertService
+```php
+class SecurityAlertService
 {
-    private readonly IEnumerable<IAlertNotifier> _notifiers;
-    private readonly ILogger<SecurityAlertService> _logger;
+    private $notifiers;
+    private $logger;
 
-    public SecurityAlertService(
-        IEnumerable<IAlertNotifier> notifiers,
-        ILogger<SecurityAlertService> logger)
-    {
-        _notifiers = notifiers;
-        _logger = logger;
+    public function __construct(
+        iterable $notifiers,
+        LoggerInterface $logger
+    ) {
+        $this->notifiers = $notifiers;
+        $this->logger = $logger;
     }
 
-    public async Task RaiseAlertAsync(SecurityAlert alert)
+    public function raiseAlert(SecurityAlert $alert): void
     {
-        _logger.LogWarning(
-            "Security alert raised: {AlertTitle} (Severity: {AlertSeverity})", 
-            alert.Title, alert.Severity);
+        $this->logger->warning('Security alert raised', [
+            'title' => $alert->getTitle(),
+            'severity' => $alert->getSeverity()
+        ]);
 
-        var tasks = _notifiers
-            .Where(n => n.SupportsSeverity(alert.Severity))
-            .Select(n => NotifyAsync(n, alert))
-            .ToList();
-
-        await Task.WhenAll(tasks);
-    }
-
-    private async Task NotifyAsync(IAlertNotifier notifier, SecurityAlert alert)
-    {
-        try
-        {
-            await notifier.NotifyAsync(alert);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Failed to send alert via {NotifierName}", notifier.GetType().Name);
+        foreach ($this->notifiers as $notifier) {
+            if ($notifier->supportsSeverity($alert->getSeverity())) {
+                try {
+                    $notifier->notify($alert);
+                } catch (Exception $e) {
+                    $this->logger->error('Failed to send alert', [
+                        'notifier' => get_class($notifier),
+                        'error' => $e->getMessage()
+                    ]);
+                }
+            }
         }
     }
 }
 
-// Email notifier implementation
-public class EmailAlertNotifier : IAlertNotifier
+// Email Notifier Implementation
+class EmailAlertNotifier
 {
-    private readonly IEmailService _emailService;
-    private readonly AlertingConfiguration _config;
+    private $mailer;
+    private $config;
 
-    public EmailAlertNotifier(
-        IEmailService emailService,
-        IOptions<AlertingConfiguration> config)
-    {
-        _emailService = emailService;
-        _config = config.Value;
+    public function __construct(
+        MailerInterface $mailer,
+        array $config
+    ) {
+        $this->mailer = $mailer;
+        $this->config = $config;
     }
 
-    public bool SupportsSeverity(SecurityAlertSeverity severity)
+    public function supportsSeverity(string $severity): bool
     {
-        return severity >= SecurityAlertSeverity.Medium;
+        return $severity >= SecurityAlertSeverity::MEDIUM;
     }
 
-    public async Task NotifyAsync(SecurityAlert alert)
+    public function notify(SecurityAlert $alert): void
     {
-        var message = new EmailMessage
-        {
-            To = _config.SecurityTeamEmail,
-            Subject = $"[Security Alert] {alert.Title}",
-            Body = FormatAlertBody(alert)
-        };
+        $message = (new Email())
+            ->to($this->config['security_team_email'])
+            ->subject("[Security Alert] {$alert->getTitle()}")
+            ->html($this->formatAlertBody($alert));
 
-        await _emailService.SendAsync(message);
+        $this->mailer->send($message);
     }
 
-    private string FormatAlertBody(SecurityAlert alert)
+    private function formatAlertBody(SecurityAlert $alert): string
     {
-        var sb = new StringBuilder();
-        sb.AppendLine($"<h1>Security Alert: {alert.Title}</h1>");
-        sb.AppendLine($"<p><strong>Severity:</strong> {alert.Severity}</p>");
-        sb.AppendLine($"<p><strong>Timestamp:</strong> {alert.Timestamp:yyyy-MM-dd HH:mm:ss}</p>");
-        sb.AppendLine($"<p><strong>Details:</strong></p>");
-        sb.AppendLine($"<pre>{alert.Details}</pre>");
+        $body = "<h1>Security Alert: {$alert->getTitle()}</h1>";
+        $body .= "<p><strong>Severity:</strong> {$alert->getSeverity()}</p>";
+        $body .= "<p><strong>Timestamp:</strong> {$alert->getTimestamp()->format('Y-m-d H:i:s')}</p>";
+        $body .= "<p><strong>Details:</strong></p>";
+        $body .= "<pre>{$alert->getDetails()}</pre>";
         
-        if (alert.Remediation != null)
-        {
-            sb.AppendLine($"<p><strong>Recommended Actions:</strong></p>");
-            sb.AppendLine($"<ul>{string.Join("", alert.Remediation.Select(r => $"<li>{r}</li>"))}</ul>");
+        if ($alert->getRemediation()) {
+            $body .= "<p><strong>Recommended Actions:</strong></p>";
+            $body .= "<ul>";
+            foreach ($alert->getRemediation() as $action) {
+                $body .= "<li>{$action}</li>";
+            }
+            $body .= "</ul>";
         }
         
-        return sb.ToString();
+        return $body;
     }
 }
 ```
@@ -427,86 +382,110 @@ public class EmailAlertNotifier : IAlertNotifier
 
 #### Secure Log Management Service
 
-```csharp
-public class SecureLogService : ILogService
+```php
+class SecureLogService
 {
-    private readonly ILogger _logger;
-    private readonly IDataProtector _protector;
-    private readonly ILogSanitizer _sanitizer;
+    private $logger;
+    private $sanitizer;
+    private $encryptionKey;
 
-    public SecureLogService(
-        ILogger<SecureLogService> logger,
-        IDataProtectionProvider protectionProvider,
-        ILogSanitizer sanitizer)
-    {
-        _logger = logger;
-        _protector = protectionProvider.CreateProtector("LogProtection");
-        _sanitizer = sanitizer;
+    public function __construct(
+        LoggerInterface $logger,
+        LogSanitizer $sanitizer,
+        string $encryptionKey
+    ) {
+        $this->logger = $logger;
+        $this->sanitizer = $sanitizer;
+        $this->encryptionKey = $encryptionKey;
     }
 
-    public void LogInformation(string message, params object[] args)
+    public function info(string $message, array $context = []): void
     {
-        var sanitizedArgs = SanitizeArguments(args);
-        _logger.LogInformation(message, sanitizedArgs);
+        $this->logger->info(
+            $this->sanitizer->sanitize($message),
+            $this->sanitizeContext($context)
+        );
     }
 
-    public void LogWarning(string message, params object[] args)
+    public function warning(string $message, array $context = []): void
     {
-        var sanitizedArgs = SanitizeArguments(args);
-        _logger.LogWarning(message, sanitizedArgs);
+        $this->logger->warning(
+            $this->sanitizer->sanitize($message),
+            $this->sanitizeContext($context)
+        );
     }
 
-    public void LogError(Exception exception, string message, params object[] args)
+    public function error(string $message, array $context = []): void
     {
-        var sanitizedArgs = SanitizeArguments(args);
-        _logger.LogError(exception, message, sanitizedArgs);
+        $this->logger->error(
+            $this->sanitizer->sanitize($message),
+            $this->sanitizeContext($context)
+        );
     }
 
-    public void LogSensitive(string sensitiveMessage, params object[] sensitiveArgs)
+    public function sensitive(string $message, array $context = []): void
     {
-        var protectedMessage = _protector.Protect(sensitiveMessage);
-        var protectedArgs = sensitiveArgs.Select(a => 
-            a is string s ? _protector.Protect(s) : a).ToArray();
-            
-        _logger.LogInformation("[Protected] " + protectedMessage, protectedArgs);
+        $encrypted = $this->encrypt($message);
+        $encryptedContext = [];
+        
+        foreach ($context as $key => $value) {
+            $encryptedContext[$key] = is_string($value) 
+                ? $this->encrypt($value)
+                : $value;
+        }
+        
+        $this->logger->info(
+            "[ENCRYPTED] " . $encrypted,
+            $encryptedContext
+        );
     }
 
-    private object[] SanitizeArguments(object[] args)
+    private function sanitizeContext(array $context): array
     {
-        return args.Select(arg =>
-        {
-            if (arg is string s)
-            {
-                return _sanitizer.Sanitize(s);
-            }
-            return arg;
-        }).ToArray();
+        $sanitized = [];
+        foreach ($context as $key => $value) {
+            $sanitized[$key] = is_string($value)
+                ? $this->sanitizer->sanitize($value)
+                : $value;
+        }
+        return $sanitized;
+    }
+
+    private function encrypt(string $data): string
+    {
+        $iv = random_bytes(16);
+        $encrypted = openssl_encrypt(
+            $data,
+            'aes-256-cbc',
+            $this->encryptionKey,
+            0,
+            $iv
+        );
+        return base64_encode($iv . $encrypted);
     }
 }
 
-// Log sanitizer implementation
-public class LogSanitizer : ILogSanitizer
+// Log Sanitizer Implementation
+class LogSanitizer
 {
-    private readonly string _replacement = "[REDACTED]";
-    private readonly string[] _sensitivePatterns = new[]
-    {
-        @"\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b", // Credit cards
-        @"\b\d{3}[- ]?\d{2}[- ]?\d{4}\b", // SSN
-        @"(?i)\bpassword\b[^=]*=[^=]*\b\w+\b", // Password=value
-        @"(?i)\bapi[-_]?key\b[^=]*=[^=]*\b\w+\b", // API_KEY=value
-    };
+    private $patterns = [
+        '/\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/' => '[CREDIT_CARD]',
+        '/\b\d{3}[- ]?\d{2}[- ]?\d{4}\b/' => '[SSN]',
+        '/(?i)\bpassword\b[^=]*=[^=]*\b\w+\b/' => '[PASSWORD]',
+        '/(?i)\bapi[-_]?key\b[^=]*=[^=]*\b\w+\b/' => '[API_KEY]'
+    ];
 
-    public string Sanitize(string input)
+    public function sanitize(string $input): string
     {
-        if (string.IsNullOrEmpty(input))
-            return input;
-
-        foreach (var pattern in _sensitivePatterns)
-        {
-            input = Regex.Replace(input, pattern, _replacement);
+        if (empty($input)) {
+            return $input;
         }
 
-        return input;
+        foreach ($this->patterns as $pattern => $replacement) {
+            $input = preg_replace($pattern, $replacement, $input);
+        }
+
+        return $input;
     }
 }
 ```
@@ -514,36 +493,97 @@ public class LogSanitizer : ILogSanitizer
 ## Implementation Checklist
 
 1. **Comprehensive Logging**
-   - Log all security-relevant events
-   - Include sufficient context (timestamps, user IDs, IPs)
-   - Use structured logging format
+   - Log all authentication attempts (success/failure)
+   - Record authorization decisions
+   - Track sensitive data access
+   - Include sufficient context (user, IP, timestamp)
 
-2. **Real-time Monitoring**
-   - Implement anomaly detection
-   - Set up alerts for suspicious activities
-   - Correlate events across systems
+2. **Log Protection**
+   - Sanitize sensitive data before logging
+   - Encrypt highly sensitive log entries
+   - Implement access controls for log files
 
-3. **Audit Trails**
-   - Record sensitive operations
+3. **Monitoring & Alerting**
+   - Detect brute force attacks
+   - Identify unusual access patterns
+   - Monitor for data exfiltration attempts
+   - Set up multi-channel alerts (email, SMS, Slack)
+
+4. **Audit Trails**
+   - Record administrative actions
+   - Track configuration changes
+   - Log data export activities
    - Protect audit logs from tampering
-   - Implement secure audit log access
 
-4. **Alerting System**
-   - Multi-channel notifications
-   - Appropriate severity levels
-   - Include remediation steps
+5. **Log Management**
+   - Define retention policies
+   - Implement log rotation
+   - Centralize log collection
+   - Regularly review logs
 
-5. **Log Protection**
-   - Sanitize sensitive data
-   - Encrypt confidential information
-   - Control log access
-
-6. **Retention Policy**
-   - Define log retention periods
-   - Comply with regulatory requirements
-   - Implement secure log archival
-
-7. **Incident Response**
+6. **Incident Response**
    - Document investigation procedures
    - Establish escalation paths
-   - Conduct regular drills
+   - Conduct regular security drills
+   - Maintain forensic capabilities
+
+## PHP-Specific Recommendations
+
+1. **Error Handling**
+   - Disable display_errors in production
+   - Log errors to secure files
+   - Implement custom error handlers
+
+2. **WordPress Specific**
+   - Enable security logging plugins
+   - Monitor for plugin vulnerabilities
+   - Audit user role changes
+   - Log file modification attempts
+
+3. **Laravel Specific**
+   - Use built-in logging channels
+   - Implement request/response logging
+   - Monitor queue failures
+   - Audit artisan command usage
+
+4. **General PHP Security**
+   - Secure log file permissions
+   - Monitor for suspicious PHP execution
+   - Track file uploads
+   - Log database query errors
+
+## Example Deployment Configuration
+
+```bash
+# Configure PHP logging
+sed -i 's/display_errors = On/display_errors = Off/' /etc/php/8.1/fpm/php.ini
+sed -i 's/log_errors = Off/log_errors = On/' /etc/php/8.1/fpm/php.ini
+sed -i 's/error_log = .*/error_log = \/var\/log\/php\/error.log/' /etc/php/8.1/fpm/php.ini
+
+# Secure log directory
+mkdir -p /var/log/php
+chown www-data:www-data /var/log/php
+chmod 750 /var/log/php
+
+# Configure logrotate
+cat > /etc/logrotate.d/php <<EOL
+/var/log/php/*.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    create 640 www-data www-data
+    sharedscripts
+    postrotate
+        /usr/bin/systemctl reload php8.1-fpm.service > /dev/null
+    endscript
+}
+EOL
+
+# Install monitoring agent
+apt-get install -y ossec-hids
+```
+
+This implementation provides a comprehensive security logging and monitoring framework for PHP applications that addresses OWASP A09 requirements while being adaptable to both WordPress and Laravel environments.
