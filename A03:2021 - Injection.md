@@ -1,62 +1,50 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A03:2021 - Injection)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A03:2021 - Injection)
 
 ## Introduction to Injection Vulnerabilities
 
-Injection flaws, now ranked #3 in the OWASP Top 10, occur when untrusted data is sent to an interpreter as part of a command or query. In .NET APIs, this most commonly manifests as SQL injection, but can also include LDAP injection, OS command injection, and other variants.
+Injection flaws rank #3 in the OWASP Top 10 and occur when untrusted data is sent to an interpreter as part of a command or query. In PHP applications, this most commonly manifests as SQL injection, but can also include NoSQL injection, command injection, and Cross-Site Scripting (XSS).
 
-## Common Injection Scenarios in .NET APIs
+## Common Injection Scenarios in PHP Applications
 
 1. **SQL Injection**
 2. **NoSQL Injection**
-3. **LDAP Injection**
-4. **Command Injection**
-5. **Cross-Site Scripting (XSS)** (now included in this category)
-6. **XML Injection**
+3. **Command Injection**
+4. **Cross-Site Scripting (XSS)**
+5. **LDAP Injection**
+6. **XML Injection (XXE)**
 7. **Template Injection**
 
 ## Step-by-Step Implementation Guide
 
 ### 1. Preventing SQL Injection
 
-#### Parameterized Queries with Entity Framework Core
+#### Parameterized Queries with PDO (PHP Data Objects)
 
-```csharp
-// Safe: Parameterized queries with Entity Framework
-public async Task<User> GetUserSafeAsync(string username)
-{
-    // This is safe as EF Core uses parameterized queries
-    return await _context.Users
-        .FirstOrDefaultAsync(u => u.Username == username);
+```php
+// Safe: Parameterized queries with PDO
+function getUserSafe(PDO $pdo, string $username): ?array {
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = :username");
+    $stmt->execute(['username' => $username]);
+    return $stmt->fetch(PDO::FETCH_ASSOC);
 }
 
-// Safe: Explicit parameterized query
-public async Task<User> GetUserSafeRawAsync(string username)
-{
-    return await _context.Users
-        .FromSqlInterpolated($"SELECT * FROM Users WHERE Username = {username}")
-        .FirstOrDefaultAsync();
+// Laravel: Safe Eloquent ORM usage
+function getUserSafeLaravel(string $email): ?User {
+    return User::where('email', $email)->first();
+}
+
+// WordPress: Safe queries with $wpdb
+function getUserSafeWordPress(string $username) {
+    global $wpdb;
+    return $wpdb->get_row(
+        $wpdb->prepare("SELECT * FROM $wpdb->users WHERE user_login = %s", $username)
+    );
 }
 
 // Dangerous: String concatenation (NEVER DO THIS)
-public async Task<User> GetUserUnsafeAsync(string username)
-{
-    var sql = $"SELECT * FROM Users WHERE Username = '{username}'";
-    return await _context.Users
-        .FromSqlRaw(sql) // Vulnerable to SQL injection!
-        .FirstOrDefaultAsync();
-}
-```
-
-#### Stored Procedures with Parameters
-
-```csharp
-public async Task<User> GetUserByEmailSafeAsync(string email)
-{
-    // Using stored procedure with parameters
-    return await _context.Users
-        .FromSqlRaw("EXEC dbo.GetUserByEmail @Email", 
-            new SqlParameter("@Email", email))
-        .FirstOrDefaultAsync();
+function getUserUnsafe(PDO $pdo, string $username): ?array {
+    $sql = "SELECT * FROM users WHERE username = '$username'";
+    return $pdo->query($sql)->fetch(PDO::FETCH_ASSOC);
 }
 ```
 
@@ -64,480 +52,353 @@ public async Task<User> GetUserByEmailSafeAsync(string email)
 
 #### Secure MongoDB Queries
 
-```csharp
-// Safe: Using filter builders
-public async Task<User> GetUserFromMongoSafeAsync(string username)
-{
-    var filter = Builders<User>.Filter.Eq(u => u.Username, username);
-    return await _mongoCollection.Find(filter).FirstOrDefaultAsync();
+```php
+// Safe: Using parameterized MongoDB queries
+function getUserFromMongoSafe(MongoDB\Collection $collection, string $username): ?array {
+    return $collection->findOne(['username' => $username]);
 }
 
-// Dangerous: Concatenating query (NEVER DO THIS)
-public async Task<User> GetUserFromMongoUnsafeAsync(string username)
-{
-    var jsonQuery = "{ 'Username': '" + username + "' }";
-    return await _mongoCollection.Find(BsonDocument.Parse(jsonQuery))
-                                .FirstOrDefaultAsync();
+// Dangerous: JSON string concatenation (NEVER DO THIS)
+function getUserFromMongoUnsafe(MongoDB\Collection $collection, string $username): ?array {
+    $json = '{"username": "' . $username . '"}';
+    return $collection->findOne(MongoDB\BSON\Document::fromPHP(json_decode($json)));
 }
 ```
 
-### 3. Preventing LDAP Injection
+### 3. Preventing Command Injection
 
-```csharp
-// Safe: Using parameterized LDAP queries
-public async Task<DirectoryEntry> FindLdapUserSafeAsync(string username)
-{
-    using var entry = new DirectoryEntry("LDAP://domain.com");
-    using var searcher = new DirectorySearcher(entry);
-    
-    // Escape special LDAP characters
-    var safeUsername = EscapeLdapSearchFilter(username);
-    searcher.Filter = $"(&(objectClass=user)(sAMAccountName={safeUsername}))";
-    
-    return await Task.Run(() => searcher.FindOne());
+```php
+// Safe: Avoiding shell execution with user input
+function getFileContentsSafe(string $filename): string {
+    if (!preg_match('/^[a-zA-Z0-9_\-\.]+$/', $filename)) {
+        throw new InvalidArgumentException('Invalid filename');
+    }
+    $path = '/safe/directory/' . $filename;
+    return file_get_contents($path);
 }
 
-private static string EscapeLdapSearchFilter(string input)
-{
-    var specialChars = new[] { '\\', '*', '(', ')', '\0', '/' };
-    var escaped = new StringBuilder();
-    
-    foreach (var c in input)
-    {
-        if (specialChars.Contains(c))
-        {
-            escaped.Append($"\\{(int)c:X2}");
-        }
-        else
-        {
-            escaped.Append(c);
-        }
+// Safe alternative with escapeshellarg
+function pingHostSafe(string $host): string {
+    if (!filter_var($host, FILTER_VALIDATE_IP)) {
+        throw new InvalidArgumentException('Invalid IP address');
     }
-    
-    return escaped.ToString();
+    return shell_exec('ping -c 1 ' . escapeshellarg($host));
+}
+
+// Dangerous: Direct user input in shell commands (NEVER DO THIS)
+function pingHostUnsafe(string $host): string {
+    return shell_exec('ping -c 1 ' . $host);
 }
 ```
 
-### 4. Preventing Command Injection
+### 4. Preventing Cross-Site Scripting (XSS)
 
-```csharp
-// Safe: Avoiding shell execution
-public async Task<string> RunProcessSafeAsync(string fileName, string arguments)
-{
-    var process = new Process
-    {
-        StartInfo = new ProcessStartInfo
-        {
-            FileName = fileName,
-            Arguments = arguments,
-            RedirectStandardOutput = true,
-            UseShellExecute = false, // Critical!
-            CreateNoWindow = true
-        }
-    };
-    
-    process.Start();
-    return await process.StandardOutput.ReadToEndAsync();
+#### Output Encoding
+
+```php
+// HTML Context
+function safeEcho(string $input): void {
+    echo htmlspecialchars($input, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 }
 
-// Dangerous: Shell execution with user input (NEVER DO THIS)
-public async Task<string> RunProcessUnsafeAsync(string command)
-{
-    var process = new Process
-    {
-        StartInfo = new ProcessStartInfo
-        {
-            FileName = "cmd.exe",
-            Arguments = $"/C {command}",
-            RedirectStandardOutput = true,
-            UseShellExecute = false
-        }
-    };
-    
-    process.Start();
-    return await process.StandardOutput.ReadToEndAsync();
+// JavaScript Context
+function safeJs(string $input): string {
+    return json_encode($input, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP);
+}
+
+// URL Context
+function safeUrl(string $input): string {
+    return urlencode($input);
+}
+
+// Laravel Blade templates automatically escape by default
+// {{ $userInput }} is safe
+
+// WordPress: Use esc_* functions
+function displayContentWordPress(string $content): void {
+    echo esc_html($content); // For HTML content
+    echo esc_js($content);   // For JavaScript
+    echo esc_url($content);  // For URLs
+    echo esc_attr($content); // For HTML attributes
 }
 ```
 
-### 5. Preventing Cross-Site Scripting (XSS)
+### 5. Preventing LDAP Injection
 
-#### Input Sanitization
-
-```csharp
-// HTML sanitizer service
-public class HtmlSanitizerService
-{
-    private readonly HtmlSanitizer _sanitizer;
-
-    public HtmlSanitizerService()
-    {
-        _sanitizer = new HtmlSanitizer();
-        
-        // Configure allowed elements and attributes
-        _sanitizer.AllowedTags.Add("b");
-        _sanitizer.AllowedTags.Add("i");
-        _sanitizer.AllowedTags.Add("u");
-        _sanitizer.AllowedAttributes.Add("class");
-        
-        // Remove all other tags and attributes
-        _sanitizer.AllowedSchemes.Clear();
-        _sanitizer.AllowedCssProperties.Clear();
-    }
-
-    public string SanitizeHtml(string input)
-    {
-        return _sanitizer.Sanitize(input);
-    }
-}
-```
-
-#### Content Security Policy (CSP) Headers
-
-```csharp
-// Middleware to add CSP headers
-public class SecurityHeadersMiddleware
-{
-    private readonly RequestDelegate _next;
-
-    public SecurityHeadersMiddleware(RequestDelegate next)
-    {
-        _next = next;
-    }
-
-    public async Task Invoke(HttpContext context)
-    {
-        // Add CSP header
-        context.Response.Headers.Add(
-            "Content-Security-Policy",
-            "default-src 'self'; " +
-            "script-src 'self' 'unsafe-inline' https://cdn.example.com; " +
-            "style-src 'self' 'unsafe-inline'; " +
-            "img-src 'self' data:; " +
-            "font-src 'self'; " +
-            "connect-src 'self'; " +
-            "media-src 'self'; " +
-            "object-src 'none'; " +
-            "frame-ancestors 'none'; " +
-            "base-uri 'self'; " +
-            "form-action 'self'; " +
-            "upgrade-insecure-requests;");
-            
-        await _next(context);
-    }
+```php
+// Safe: Using proper escaping
+function searchLdapSafe(LDAP\Connection $ldap, string $username): ?array {
+    $safeUsername = ldap_escape($username, null, LDAP_ESCAPE_FILTER);
+    $filter = "(cn={$safeUsername})";
+    $result = ldap_search($ldap, "dc=example,dc=com", $filter);
+    return ldap_get_entries($ldap, $result);
 }
 
-// Register in Program.cs
-app.UseMiddleware<SecurityHeadersMiddleware>();
+// WordPress: Safe LDAP integration
+function searchLdapWordPress(string $username): ?array {
+    $safeUsername = ldap_escape($username, null, LDAP_ESCAPE_FILTER);
+    $filter = apply_filters('ldap_search_filter', "(cn={$safeUsername})", $username);
+    // ... rest of LDAP search
+}
 ```
 
 ### 6. Preventing XML Injection (XXE)
 
-```csharp
-// Safe XML reader settings
-public class SafeXmlParser
-{
-    public XDocument ParseXmlSafe(Stream xmlStream)
-    {
-        var settings = new XmlReaderSettings
-        {
-            DtdProcessing = DtdProcessing.Prohibit,
-            XmlResolver = null, // Disable external references
-            MaxCharactersFromEntities = 0
-        };
-        
-        using var reader = XmlReader.Create(xmlStream, settings);
-        return XDocument.Load(reader);
-    }
+```php
+// Safe: Disabling XXE in PHP
+function parseXmlSafe(string $xmlString): SimpleXMLElement {
+    $oldValue = libxml_disable_entity_loader(true);
+    $dom = new DOMDocument();
+    $dom->loadXML($xmlString, LIBXML_NOENT | LIBXML_DTDLOAD | LIBXML_DTDATTR | LIBXML_NONET);
+    libxml_disable_entity_loader($oldValue);
+    return simplexml_import_dom($dom);
+}
 
-    public XDocument ParseXmlUnsafe(Stream xmlStream)
-    {
-        // Dangerous: Allows XXE attacks
-        return XDocument.Load(xmlStream);
-    }
+// Laravel: Safe XML processing
+function parseXmlLaravel(string $xmlString): array {
+    return XmlParser::parse($xmlString, false); // Disable external entities
 }
 ```
 
 ### 7. Preventing Template Injection
 
-```csharp
-// Safe template rendering
-public class SafeTemplateRenderer
-{
-    private readonly RazorLightEngine _engine;
+```php
+// Safe: Using Twig with auto-escaping
+function renderTemplateSafe(Twig\Environment $twig, string $template, array $data): string {
+    return $twig->render($template, $data);
+}
 
-    public SafeTemplateRenderer()
-    {
-        _engine = new RazorLightEngineBuilder()
-            .UseMemoryCachingProvider()
-            .Build();
-    }
+// Configure Twig to auto-escape
+$twig = new \Twig\Environment($loader, [
+    'autoescape' => 'html',
+    'auto_reload' => true,
+]);
 
-    public async Task<string> RenderTemplateSafeAsync<T>(string template, T model)
-    {
-        // Ensure template doesn't contain dangerous directives
-        if (template.Contains("@inherits") || template.Contains("@section"))
-        {
-            throw new SecurityException("Dangerous template directive detected");
-        }
-        
-        return await _engine.CompileRenderStringAsync(
-            Guid.NewGuid().ToString(),
-            template,
-            model);
-    }
+// WordPress: Safe template rendering
+function renderTemplateWordPress(string $template, array $data): string {
+    ob_start();
+    extract($data, EXTR_SKIP); // Only extract allowed variables
+    include locate_template($template);
+    return ob_get_clean();
 }
 ```
 
 ## Input Validation Framework
 
-```csharp
-// Comprehensive input validation
-public class InputValidator
-{
-    public ValidationResult ValidateUserInput(UserInput input)
-    {
-        var result = new ValidationResult();
-        
-        // Validate username
-        if (string.IsNullOrWhiteSpace(input.Username))
-        {
-            result.AddError("Username is required");
+```php
+class InputValidator {
+    private array $errors = [];
+
+    public function validateEmail(string $email): self {
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $this->errors['email'] = 'Invalid email format';
         }
-        else if (input.Username.Length > 50)
-        {
-            result.AddError("Username too long");
-        }
-        else if (!Regex.IsMatch(input.Username, @"^[a-zA-Z0-9_\-\.]+$"))
-        {
-            result.AddError("Username contains invalid characters");
-        }
-        
-        // Validate email
-        if (!IsValidEmail(input.Email))
-        {
-            result.AddError("Invalid email format");
-        }
-        
-        // Validate against common injection patterns
-        var injectionPatterns = new[] 
-        {
-            "<script", 
-            "--", 
-            ";", 
-            "/*", 
-            "*/", 
-            "xp_", 
-            "char(",
-            "waitfor delay",
-            "select ",
-            "insert ",
-            "update ",
-            "delete ",
-            "drop ",
-            "create ",
-            "alter ",
-            "exec ",
-            "union "
-        };
-        
-        foreach (var prop in input.GetType().GetProperties())
-        {
-            if (prop.PropertyType != typeof(string)) continue;
-            
-            var value = prop.GetValue(input) as string;
-            if (string.IsNullOrEmpty(value)) continue;
-            
-            foreach (var pattern in injectionPatterns)
-            {
-                if (value.Contains(pattern, StringComparison.OrdinalIgnoreCase))
-                {
-                    result.AddError($"Potential injection pattern detected in {prop.Name}");
-                    break;
-                }
-            }
-        }
-        
-        return result;
+        return $this;
     }
 
-    private bool IsValidEmail(string email)
-    {
-        try
-        {
-            var addr = new System.Net.Mail.MailAddress(email);
-            return addr.Address == email;
+    public function validateUsername(string $username): self {
+        if (!preg_match('/^[a-zA-Z0-9_\-]{3,20}$/', $username)) {
+            $this->errors['username'] = 'Username must be 3-20 characters (letters, numbers, _, -)';
         }
-        catch
-        {
-            return false;
+        return $this;
+    }
+
+    public function checkForInjection(string $input, string $fieldName): self {
+        $patterns = [
+            '/<script/i', '/--/', '/;/', '/\/\*/', '/\*\//', 
+            '/select\s+/i', '/insert\s+/i', '/update\s+/i', 
+            '/delete\s+/i', '/drop\s+/i', '/union\s+/i', '/exec\s+/i'
+        ];
+        
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $input)) {
+                $this->errors[$fieldName] = 'Potential injection attempt detected';
+                break;
+            }
         }
+        return $this;
+    }
+
+    public function isValid(): bool {
+        return empty($this->errors);
+    }
+
+    public function getErrors(): array {
+        return $this->errors;
     }
 }
 
-public class ValidationResult
-{
-    public bool IsValid => !Errors.Any();
-    public List<string> Errors { get; } = new List<string>();
-    
-    public void AddError(string error)
-    {
-        Errors.Add(error);
-    }
+// Usage
+$validator = new InputValidator();
+$validator->validateEmail($email)
+          ->validateUsername($username)
+          ->checkForInjection($searchTerm, 'search');
+
+if (!$validator->isValid()) {
+    $errors = $validator->getErrors();
+    // Handle errors
 }
 ```
 
 ## Testing for Injection Vulnerabilities
 
-```csharp
-[Fact]
-public async Task GetUser_WithMaliciousInput_DoesNotExecuteInjection()
-{
-    // Arrange
-    var client = _factory.CreateClient();
-    var maliciousInput = "admin' OR '1'='1";
-    
-    // Act
-    var response = await client.GetAsync($"/api/users?username={maliciousInput}");
-    var content = await response.Content.ReadAsStringAsync();
-    
-    // Assert
-    Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-    Assert.DoesNotContain("administrator", content);
-}
+```php
+class InjectionTests extends TestCase {
+    public function testSqlInjectionProtection() {
+        $pdo = new PDO(/* ... */);
+        $maliciousInput = "admin' OR '1'='1";
+        
+        $user = getUserSafe($pdo, $maliciousInput);
+        
+        $this->assertNull($user, 'SQL injection attempt should return no results');
+    }
 
-[Fact]
-public async Task SearchUsers_WithXssAttempt_SanitizesOutput()
-{
-    // Arrange
-    var client = _factory.CreateClient();
-    var xssAttempt = "<script>alert('xss')</script>";
-    
-    // Act
-    var response = await client.GetAsync($"/api/users/search?term={xssAttempt}");
-    var content = await response.Content.ReadAsStringAsync();
-    
-    // Assert
-    Assert.DoesNotContain("<script>", content);
-    Assert.Contains("&lt;script&gt;", content);
-}
+    public function testXssProtection() {
+        $xssAttempt = "<script>alert('xss')</script>";
+        $safeOutput = htmlspecialchars($xssAttempt, ENT_QUOTES, 'UTF-8');
+        
+        $this->assertStringNotContainsString('<script>', $safeOutput);
+        $this->assertStringContainsString('&lt;script&gt;', $safeOutput);
+    }
 
-[Fact]
-public void EscapeLdapSearchFilter_WithSpecialChars_EscapesCorrectly()
-{
-    // Arrange
-    var input = "admin)(objectClass=*))";
-    var expected = "admin\\29\\28objectClass=\\2A\\29\\29";
-    
-    // Act
-    var result = EscapeLdapSearchFilter(input);
-    
-    // Assert
-    Assert.Equal(expected, result);
+    public function testCommandInjectionProtection() {
+        $maliciousInput = "localhost; rm -rf /";
+        $this->expectException(InvalidArgumentException::class);
+        
+        pingHostSafe($maliciousInput);
+    }
 }
 ```
 
 ## Monitoring and Logging Injection Attempts
 
-```csharp
-// Injection attempt detection middleware
-public class InjectionDetectionMiddleware
-{
-    private readonly RequestDelegate _next;
-    private readonly ILogger<InjectionDetectionMiddleware> _logger;
-
-    public InjectionDetectionMiddleware(
-        RequestDelegate next,
-        ILogger<InjectionDetectionMiddleware> logger)
-    {
-        _next = next;
-        _logger = logger;
-    }
-
-    public async Task Invoke(HttpContext context)
-    {
-        // Check query string
-        foreach (var (key, value) in context.Request.Query)
-        {
-            if (IsPotentialInjection(value))
-            {
-                LogInjectionAttempt(context, key, value, "query string");
-                await BlockRequest(context);
-                return;
-            }
+```php
+class SecurityLogger {
+    public static function logInjectionAttempt(string $type, string $input, string $source = ''): void {
+        $logMessage = sprintf(
+            "[%s] Potential %s injection attempt from IP %s. Input: %s. Source: %s",
+            date('Y-m-d H:i:s'),
+            $type,
+            $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            substr($input, 0, 100), // Limit length
+            $source
+        );
+        
+        error_log($logMessage);
+        
+        // Optionally send to security team
+        if (in_array($type, ['SQL', 'Command', 'XSS'])) {
+            self::alertSecurityTeam($logMessage);
         }
-        
-        // Check form data
-        if (context.Request.HasFormContentType)
-        {
-            var form = await context.Request.ReadFormAsync();
-            foreach (var (key, value) in form)
-            {
-                if (IsPotentialInjection(value))
-                {
-                    LogInjectionAttempt(context, key, value, "form data");
-                    await BlockRequest(context);
-                    return;
-                }
-            }
-        }
-        
-        await _next(context);
     }
-
-    private bool IsPotentialInjection(string value)
-    {
-        if (string.IsNullOrEmpty(value)) return false;
-        
-        var patterns = new[]
-        {
-            "--", ";", "/*", "*/", "xp_", 
-            "char(", "waitfor delay", "select ", 
-            "insert ", "update ", "delete ", 
-            "drop ", "create ", "alter ", "exec ", 
-            "union ", "<script", "document.cookie",
-            "onload=", "onerror=", "onclick="
-        };
-        
-        return patterns.Any(p => 
-            value.Contains(p, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private void LogInjectionAttempt(HttpContext context, string key, 
-                                   string value, string source)
-    {
-        _logger.LogWarning(
-            "Potential injection attempt detected from {IP}. Source: {Source}, Key: {Key}, Value: {Value}",
-            context.Connection.RemoteIpAddress,
-            source,
-            key,
-            value);
-            
-        // Alert security team
-        SecurityAlertService.RaiseAlert(
-            $"Injection attempt detected in {context.Request.Path}",
-            AlertSeverity.High);
-    }
-
-    private async Task BlockRequest(HttpContext context)
-    {
-        context.Response.StatusCode = StatusCodes.Status400BadRequest;
-        await context.Response.WriteAsync("Invalid request detected");
+    
+    private static function alertSecurityTeam(string $message): void {
+        // Implement alerting (email, Slack, etc.)
     }
 }
 
-// Register in Program.cs
-app.UseMiddleware<InjectionDetectionMiddleware>();
+// Middleware for Laravel
+class InjectionDetectionMiddleware {
+    public function handle($request, Closure $next) {
+        foreach ($request->all() as $key => $value) {
+            if (is_string($value) && $this->isPotentialInjection($value)) {
+                SecurityLogger::logInjectionAttempt(
+                    $this->detectInjectionType($value),
+                    $value,
+                    $request->fullUrl()
+                );
+                
+                return response('Invalid input detected', 400);
+            }
+        }
+        
+        return $next($request);
+    }
+    
+    private function isPotentialInjection(string $value): bool {
+        $patterns = [
+            '/<script/i', '/--/', '/;/', '/\/\*/', '/\*\//', 
+            '/select\s+/i', '/insert\s+/i', '/update\s+/i', 
+            '/delete\s+/i', '/drop\s+/i', '/union\s+/i', '/exec\s+/i',
+            '/`/', '/\$\(/', '/\|/', '/&/', '/>/', '/</'
+        ];
+        
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $value)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    private function detectInjectionType(string $value): string {
+        if (preg_match('/<script/i', $value)) return 'XSS';
+        if (preg_match('/(select|insert|update|delete|drop|union)\s+/i', $value)) return 'SQL';
+        if (preg_match('/(;|\||&|`|\$\(|>|<)/', $value)) return 'Command';
+        return 'Unknown';
+    }
+}
+
+// WordPress: Hook into input processing
+add_filter('preprocess_comment', function($commentData) {
+    if (preg_match('/<script|--|;|\/\*|\*\//i', $commentData['comment_content'])) {
+        SecurityLogger::logInjectionAttempt(
+            'XSS', 
+            $commentData['comment_content'], 
+            'comment'
+        );
+        wp_die('Invalid input detected');
+    }
+    return $commentData;
+});
 ```
 
-## Best Practices Summary
+## Best Practices Summary for PHP
 
-1. **Always use parameterized queries** - Never concatenate SQL queries
-2. **Use ORM safely** - Even with Entity Framework, avoid raw SQL with user input
-3. **Validate all inputs** - Whitelist acceptable characters and patterns
-4. **Sanitize output** - Especially for HTML, XML, and other structured output
-5. **Use secure APIs** - Prefer safe methods over potentially dangerous ones
-6. **Implement Content Security Policy** - Mitigate impact of successful XSS
-7. **Disable dangerous features** - Like DTD processing in XML parsers
-8. **Escape special characters** - When working with LDAP, OS commands, etc.
-9. **Log injection attempts** - Monitor for attack patterns
-10. **Regularly test** - Use both automated scanning and manual testing
+1. **Always use parameterized queries**:
+   - PDO for SQL databases
+   - Prepared statements in WordPress ($wpdb->prepare())
+   - Eloquent ORM in Laravel
+
+2. **Validate all inputs**:
+   - Use filter_var() for emails, URLs, etc.
+   - Whitelist acceptable characters with regex
+   - Implement strict type checking
+
+3. **Escape all outputs**:
+   - htmlspecialchars() for HTML context
+   - json_encode() for JavaScript context
+   - urlencode() for URL parameters
+   - Use WordPress esc_* functions
+
+4. **Use secure configuration**:
+   - Disable register_globals (PHP.ini)
+   - Set open_basedir restrictions
+   - Disable dangerous PHP functions (exec, system, etc.)
+
+5. **Implement Content Security Policy (CSP)**:
+   - Add CSP headers to responses
+   - Restrict sources for scripts, styles, etc.
+
+6. **Secure file operations**:
+   - Validate file paths
+   - Restrict file permissions
+   - Use basename() to prevent directory traversal
+
+7. **Framework-specific protections**:
+   - **Laravel**: Use built-in CSRF protection, validation, and ORM
+   - **WordPress**: Use nonces, capabilities, and sanitization functions
+
+8. **Regular security updates**:
+   - Keep PHP and all libraries updated
+   - Monitor security advisories
+
+9. **Log and monitor**:
+   - Log potential injection attempts
+   - Set up alerts for suspicious activity
+
+10. **Security headers**:
+    - Implement X-XSS-Protection
+    - Use X-Content-Type-Options: nosniff
+    - Set X-Frame-Options: DENY
+    - Enable HTTP Strict Transport Security (HSTS)
