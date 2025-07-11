@@ -1,526 +1,388 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A05:2021 - Security Misconfiguration)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A05:2021 - Security Misconfiguration)
 
 ## Introduction to Security Misconfiguration Risks
 
-Security Misconfiguration moves up to #5 in the OWASP Top 10 2021. This occurs when security settings are undefined, misconfigured, or left at default values. For .NET APIs, this includes insecure server configurations, improper error handling, unnecessary features enabled, and more.
+Security Misconfiguration ranks #5 in the OWASP Top 10 2021. This occurs when security settings are improperly configured, left at default values, or completely undefined. For PHP applications (including WordPress and Laravel), this includes insecure server configurations, verbose error reporting, unnecessary features enabled, and more.
 
-## Common Security Misconfigurations in .NET APIs
+## Common Security Misconfigurations in PHP Applications
 
 1. **Insecure Default Configurations**
-2. **Verbose Error Messages**
-3. **Unnecessary HTTP Methods Enabled**
-4. **Improper CORS Configuration**
+2. **Verbose Error Reporting in Production**
+3. **Unnecessary PHP Modules Enabled**
+4. **Improper File/Directory Permissions**
 5. **Missing Security Headers**
 6. **Debug Features Enabled in Production**
-7. **Insecure File/Directory Permissions**
+7. **Insecure .htaccess/wp-config.php Settings**
 
 ## Step-by-Step Secure Configuration Guide
 
-### 1. Secure Application Startup
+### 1. Secure PHP Configuration (php.ini)
 
-#### Program.cs Secure Defaults
+#### Essential Security Settings
 
-```csharp
-var builder = WebApplication.CreateBuilder(args);
+```ini
+; Disable dangerous functions
+disable_functions = exec,passthru,shell_exec,system,proc_open,popen,curl_exec,curl_multi_exec,parse_ini_file,show_source
 
-// 1. Remove server header
-builder.WebHost.ConfigureKestrel(serverOptions =>
-{
-    serverOptions.AddServerHeader = false;
-});
-
-// 2. Configure strict transport security
-builder.Services.AddHsts(options =>
-{
-    options.Preload = true;
-    options.IncludeSubDomains = true;
-    options.MaxAge = TimeSpan.FromDays(365);
-    options.ExcludedHosts.Clear();
-});
-
-// 3. Add security headers middleware
-builder.Services.AddSecurityHeaders();
-
-// 4. Configure production-ready error handling
-if (!builder.Environment.IsDevelopment())
-{
-    builder.Services.AddExceptionHandler<ProductionExceptionHandler>();
-    builder.WebHost.UseSetting("detailedErrors", "false");
-}
-
-var app = builder.Build();
-
-// 5. Enforce security middleware
-app.UseSecurityHeaders();
-app.UseHsts();
-app.UseHttpsRedirection();
+; Security-focused settings
+expose_php = Off
+display_errors = Off
+log_errors = On
+error_log = /var/log/php_errors.log
+allow_url_fopen = Off
+allow_url_include = Off
+session.cookie_httponly = 1
+session.cookie_secure = 1
+session.use_strict_mode = 1
+session.cookie_samesite = Strict
 ```
 
-### 2. Security Headers Configuration
+### 2. Secure Laravel Configuration
 
-#### Comprehensive Security Headers Middleware
+#### config/app.php and .env Settings
 
-```csharp
-public static class SecurityHeadersMiddlewareExtensions
-{
-    public static IApplicationBuilder UseSecurityHeaders(this IApplicationBuilder app)
-    {
-        var policyCollection = new HeaderPolicyCollection()
-            .AddFrameOptionsDeny()
-            .AddXssProtectionBlock()
-            .AddContentTypeOptionsNoSniff()
-            .AddReferrerPolicyStrictOriginWhenCrossOrigin()
-            .AddCrossOriginOpenerPolicy(builder => builder.SameOrigin())
-            .AddCrossOriginResourcePolicy(builder => builder.SameOrigin())
-            .AddCrossOriginEmbedderPolicy(builder => builder.RequireCorp())
-            .AddContentSecurityPolicy(builder =>
-            {
-                builder.AddObjectSrc().None();
-                builder.AddFormAction().Self();
-                builder.AddFrameAncestors().None();
-                builder.AddDefaultSrc().Self();
-                builder.AddScriptSrc().Self().WithNonce();
-                builder.AddStyleSrc().Self().WithNonce();
-                builder.AddImgSrc().Self().Data();
-            })
-            .RemoveServerHeader()
-            .AddPermissionsPolicy(builder =>
-            {
-                builder.AddAccelerometer().None();
-                builder.AddCamera().None();
-                builder.AddGeolocation().None();
-                builder.AddMicrophone().None();
-                builder.AddPayment().None();
-            });
+```php
+// config/app.php
+'debug' => env('APP_DEBUG', false),
+'env' => env('APP_ENV', 'production'),
 
-        return app.UseSecurityHeaders(policyCollection);
-    }
-}
+// .env
+APP_ENV=production
+APP_DEBUG=false
+APP_URL=https://yourdomain.com
+
+# Session configuration
+SESSION_DRIVER=cookie
+SESSION_SECURE_COOKIE=true
+SESSION_HTTP_ONLY=true
+SESSION_SAME_SITE=strict
 ```
 
-### 3. Production Exception Handling
+#### Middleware for Security Headers
 
-#### Secure Exception Handler
+```php
+// app/Http/Middleware/SecureHeadersMiddleware.php
+namespace App\Http\Middleware;
 
-```csharp
-public class ProductionExceptionHandler : IExceptionHandler
+use Closure;
+
+class SecureHeadersMiddleware
 {
-    private readonly ILogger<ProductionExceptionHandler> _logger;
+    private $unwantedHeaders = [
+        'X-Powered-By',
+        'Server',
+    ];
 
-    public ProductionExceptionHandler(ILogger<ProductionExceptionHandler> logger)
+    public function handle($request, Closure $next)
     {
-        _logger = logger;
-    }
+        $response = $next($request);
 
-    public async ValueTask<bool> TryHandleAsync(
-        HttpContext httpContext,
-        Exception exception,
-        CancellationToken cancellationToken)
-    {
-        _logger.LogError(
-            exception, "An unhandled exception has occurred");
+        foreach ($this->unwantedHeaders as $header) {
+            header_remove($header);
+        }
+
+        $response->headers->set('X-Frame-Options', 'DENY');
+        $response->headers->set('X-Content-Type-Options', 'nosniff');
+        $response->headers->set('X-XSS-Protection', '1; mode=block');
+        $response->headers->set('Referrer-Policy', 'strict-origin-when-cross-origin');
         
-        var problemDetails = new ProblemDetails
-        {
-            Title = "An error occurred",
-            Status = StatusCodes.Status500InternalServerError,
-            Instance = httpContext.Request.Path
-        };
+        $csp = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.example.com;";
+        $response->headers->set('Content-Security-Policy', $csp);
+        
+        $response->headers->set('Permissions-Policy', [
+            'geolocation=()',
+            'camera=()',
+            'microphone=()',
+            'payment=()'
+        ]);
 
-        // Sanitize error details in production
-        if (httpContext.RequestServices.GetRequiredService<IWebHostEnvironment>().IsDevelopment())
-        {
-            problemDetails.Detail = exception.ToString();
-        }
-        else
-        {
-            problemDetails.Detail = "An unexpected error occurred. Please try again later.";
-        }
-
-        httpContext.Response.StatusCode = problemDetails.Status.Value;
-        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken);
-
-        return true;
+        return $response;
     }
 }
+
+// Register in app/Http/Kernel.php
+protected $middleware = [
+    \App\Http\Middleware\SecureHeadersMiddleware::class,
+    // other middleware...
+];
 ```
 
-### 4. Secure CORS Configuration
+### 3. Secure WordPress Configuration
 
-#### Granular CORS Policy
+#### wp-config.php Hardening
 
-```csharp
-// Program.cs
-var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>();
+```php
+// Disable file editing
+define('DISALLOW_FILE_EDIT', true);
 
-builder.Services.AddCors(options =>
+// Force SSL for admin and logins
+define('FORCE_SSL_ADMIN', true);
+
+// Block external requests
+define('WP_HTTP_BLOCK_EXTERNAL', true);
+
+// Allow only specific hosts (if external requests needed)
+define('WP_ACCESSIBLE_HOSTS', 'api.example.com,cdn.example.com');
+
+// Security keys - generate unique values
+define('AUTH_KEY',         'put your unique phrase here');
+define('SECURE_AUTH_KEY',  'put your unique phrase here');
+define('LOGGED_IN_KEY',    'put your unique phrase here');
+define('NONCE_KEY',        'put your unique phrase here');
+// ... (all 8 keys should be unique and random)
+```
+
+#### .htaccess Security Rules
+
+```apache
+# Block directory browsing
+Options -Indexes
+
+# Protect wp-config.php
+<Files wp-config.php>
+    Order allow,deny
+    Deny from all
+</Files>
+
+# Disable XML-RPC (if not needed)
+<Files xmlrpc.php>
+    Order allow,deny
+    Deny from all
+</Files>
+
+# Prevent PHP execution in uploads
+<Directory /wp-content/uploads>
+    <Files *.php>
+        Deny from all
+    </Files>
+</Directory>
+
+# Security Headers
+<IfModule mod_headers.c>
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+    
+    # Remove server headers
+    Header unset X-Powered-By
+    Header unset Server
+</IfModule>
+```
+
+### 4. File and Directory Permissions
+
+#### Secure Permission Structure
+
+```bash
+# Recommended permissions for WordPress
+find /path/to/wordpress/ -type d -exec chmod 755 {} \;
+find /path/to/wordpress/ -type f -exec chmod 644 {} \;
+
+# wp-config.php should be readable only by web server
+chmod 640 /path/to/wordpress/wp-config.php
+
+# wp-content/uploads may need write access
+chmod -R 755 /path/to/wordpress/wp-content/uploads
+
+# Laravel storage and bootstrap/cache need write access
+chmod -R 775 /path/to/laravel/storage
+chmod -R 775 /path/to/laravel/bootstrap/cache
+```
+
+### 5. Production Error Handling
+
+#### Laravel Error Configuration
+
+```php
+// app/Exceptions/Handler.php
+public function register()
 {
-    options.AddPolicy("ProductionCors", policy =>
-    {
-        policy.WithOrigins(allowedOrigins)
-              .WithMethods("GET", "POST", "PUT", "DELETE")
-              .AllowAnyHeader()
-              .SetPreflightMaxAge(TimeSpan.FromSeconds(86400))
-              .WithExposedHeaders("X-Correlation-ID");
+    $this->renderable(function (Throwable $e, $request) {
+        if (!config('app.debug')) {
+            return response()->json([
+                'message' => 'An error occurred. Please try again later.'
+            ], 500);
+        }
     });
-
-    // Strict policy for sensitive endpoints
-    options.AddPolicy("StrictCors", policy =>
-    {
-        policy.WithOrigins(allowedOrigins[0]) // Only primary origin
-              .WithMethods("POST")
-              .WithHeaders("Content-Type", "Authorization")
-              .SetPreflightMaxAge(TimeSpan.FromSeconds(3600));
-    });
-});
-
-// Apply in controllers
-[ApiController]
-[Route("api/[controller]")]
-[EnableCors("ProductionCors")]
-public class ProductsController : ControllerBase
-{
-    [EnableCors("StrictCors")]
-    [HttpPost("purchase")]
-    public IActionResult Purchase([FromBody] PurchaseRequest request)
-    {
-        // Sensitive operation
-    }
 }
 ```
 
-### 5. HTTP Method Restrictions
+#### WordPress Error Handling
 
-#### Endpoint-Level Method Filtering
+```php
+// wp-config.php
+define('WP_DEBUG', false);
+define('WP_DEBUG_DISPLAY', false);
+define('WP_DEBUG_LOG', true); // Log errors to wp-content/debug.log
 
-```csharp
-// Middleware to restrict HTTP methods
-public class HttpMethodRestrictionMiddleware
-{
-    private readonly RequestDelegate _next;
-    private readonly ILogger<HttpMethodRestrictionMiddleware> _logger;
-    private readonly string[] _allowedMethods = { "GET", "POST", "PUT", "DELETE" };
-
-    public HttpMethodRestrictionMiddleware(
-        RequestDelegate next,
-        ILogger<HttpMethodRestrictionMiddleware> logger)
-    {
-        _next = next;
-        _logger = logger;
-    }
-
-    public async Task Invoke(HttpContext context)
-    {
-        if (!_allowedMethods.Contains(context.Request.Method))
-        {
-            _logger.LogWarning(
-                "Blocked disallowed HTTP method {Method} for {Path}",
-                context.Request.Method,
-                context.Request.Path);
-            
-            context.Response.StatusCode = StatusCodes.Status405MethodNotAllowed;
-            await context.Response.WriteAsync("Method not allowed");
-            return;
-        }
-
-        await _next(context);
+// Custom error page in theme's functions.php
+function custom_error_handler() {
+    if (!WP_DEBUG && is_404()) {
+        status_header(404);
+        include(get_template_directory() . '/404.php');
+        exit;
     }
 }
-
-// Register in Program.cs
-app.UseMiddleware<HttpMethodRestrictionMiddleware>();
+add_action('template_redirect', 'custom_error_handler');
 ```
 
-### 6. Secure File/Directory Permissions
+### 6. Secure Database Configuration
 
-#### Secure File Access Service
+#### Laravel Database Security
 
-```csharp
-public class SecureFileService
-{
-    private readonly string _rootPath;
-    private readonly ILogger<SecureFileService> _logger;
-
-    public SecureFileService(
-        IWebHostEnvironment env,
-        ILogger<SecureFileService> logger)
-    {
-        _rootPath = Path.Combine(env.ContentRootPath, "SecureFiles");
-        _logger = logger;
-        
-        // Ensure directory exists with secure permissions
-        if (!Directory.Exists(_rootPath))
-        {
-            Directory.CreateDirectory(_rootPath);
-            SetSecurePermissions(_rootPath);
-        }
-    }
-
-    public async Task<string> ReadSecureFileAsync(string fileName)
-    {
-        var filePath = GetSecurePath(fileName);
-        
-        // Verify file is within secure directory
-        if (!filePath.StartsWith(_rootPath))
-        {
-            _logger.LogError("Path traversal attempt detected: {Path}", filePath);
-            throw new SecurityException("Invalid file path");
-        }
-
-        return await File.ReadAllTextAsync(filePath);
-    }
-
-    private string GetSecurePath(string fileName)
-    {
-        // Sanitize file name
-        var safeFileName = Path.GetFileName(fileName);
-        if (string.IsNullOrEmpty(safeFileName))
-        {
-            throw new ArgumentException("Invalid file name");
-        }
-        
-        return Path.Combine(_rootPath, safeFileName);
-    }
-
-    private void SetSecurePermissions(string path)
-    {
-        try
-        {
-            // Windows ACLs
-            var directoryInfo = new DirectoryInfo(path);
-            var directorySecurity = directoryInfo.GetAccessControl();
-            
-            directorySecurity.AddAccessRule(
-                new FileSystemAccessRule(
-                    "Authenticated Users",
-                    FileSystemRights.ReadAndExecute,
-                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
-                    PropagationFlags.None,
-                    AccessControlType.Allow));
-            
-            directoryInfo.SetAccessControl(directorySecurity);
-        }
-        catch (PlatformNotSupportedException)
-        {
-            // Linux/Unix systems
-            File.SetUnixFileMode(path, 
-                UnixFileMode.UserRead | UnixFileMode.UserExecute |
-                UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
-        }
-    }
-}
+```php
+// config/database.php
+'mysql' => [
+    'driver' => 'mysql',
+    'url' => env('DATABASE_URL'),
+    'host' => env('DB_HOST', '127.0.0.1'),
+    'port' => env('DB_PORT', '3306'),
+    'database' => env('DB_DATABASE', 'forge'),
+    'username' => env('DB_USERNAME', 'forge'),
+    'password' => env('DB_PASSWORD', ''),
+    'unix_socket' => env('DB_SOCKET', ''),
+    'charset' => 'utf8mb4',
+    'collation' => 'utf8mb4_unicode_ci',
+    'prefix' => '',
+    'prefix_indexes' => true,
+    'strict' => true, // Enable strict mode
+    'engine' => null,
+    'options' => extension_loaded('pdo_mysql') ? array_filter([
+        PDO::MYSQL_ATTR_SSL_CA => env('MYSQL_ATTR_SSL_CA'),
+        PDO::ATTR_EMULATE_PREPARES => false, // Force real prepared statements
+    ]) : [],
+],
 ```
 
-### 7. Secure Configuration Management
+#### WordPress Database Security
 
-#### Configuration Validation
-
-```csharp
-public class SecurityConfigurationValidator
-{
-    private readonly IConfiguration _config;
-    private readonly ILogger<SecurityConfigurationValidator> _logger;
-
-    public SecurityConfigurationValidator(
-        IConfiguration config,
-        ILogger<SecurityConfigurationValidator> logger)
-    {
-        _config = config;
-        _logger = logger;
-    }
-
-    public void Validate()
-    {
-        CheckForDefaultCredentials();
-        CheckForDebugSettings();
-        ValidateEncryptionKeys();
-        CheckCorsOrigins();
-    }
-
-    private void CheckForDefaultCredentials()
-    {
-        var adminUser = _config["AdminCredentials:Username"];
-        var adminPass = _config["AdminCredentials:Password"];
-        
-        if (adminUser == "admin" || adminPass == "admin123")
-        {
-            _logger.LogCritical("Default admin credentials detected!");
-            throw new SecurityConfigurationException("Default credentials are not allowed");
-        }
-    }
-
-    private void CheckForDebugSettings()
-    {
-        if (_config.GetValue<bool>("EnableDebugFeatures"))
-        {
-            _logger.LogWarning("Debug features are enabled in configuration");
-        }
-    }
-
-    private void ValidateEncryptionKeys()
-    {
-        var keys = new[]
-        {
-            _config["DataProtection:Key"],
-            _config["Jwt:SecretKey"],
-            _config["Encryption:MasterKey"]
-        };
-
-        if (keys.Any(k => string.IsNullOrEmpty(k) || k.Length < 32))
-        {
-            throw new SecurityConfigurationException("Encryption keys are not properly configured");
-        }
-    }
-
-    private void CheckCorsOrigins()
-    {
-        var origins = _config.GetSection("Cors:AllowedOrigins").Get<string[]>();
-        if (origins?.Contains("*") == true)
-        {
-            _logger.LogCritical("Dangerous CORS configuration - wildcard origin allowed");
-            throw new SecurityConfigurationException("Wildcard CORS origin is not allowed");
-        }
-    }
-}
-
-// Register in Program.cs
-builder.Services.AddHostedService<ConfigurationValidationService>();
+```sql
+-- MySQL user should have least privileges
+CREATE USER 'wpuser'@'localhost' IDENTIFIED BY 'strongpassword';
+GRANT SELECT, INSERT, UPDATE, DELETE ON wpdatabase.* TO 'wpuser'@'localhost';
+FLUSH PRIVILEGES;
 ```
 
-## Automated Security Scanning
+### 7. Security Scanning and Monitoring
 
-### 1. Configuration Health Check
+#### Laravel Security Checker
 
-```csharp
-public class SecurityConfigurationHealthCheck : IHealthCheck
-{
-    private readonly IConfiguration _config;
-    
-    public SecurityConfigurationHealthCheck(IConfiguration config)
-    {
-        _config = config;
-    }
-    
-    public Task<HealthCheckResult> CheckHealthAsync(
-        HealthCheckContext context,
-        CancellationToken cancellationToken = default)
-    {
-        var issues = new List<string>();
-        
-        // Check for debug mode
-        if (_config.GetValue<bool>("EnableDebugFeatures"))
-        {
-            issues.Add("Debug features are enabled in production");
-        }
-        
-        // Check for default passwords
-        if (_config["AdminPassword"] == "admin123")
-        {
-            issues.Add("Default admin password detected");
-        }
-        
-        // Check HTTPS enforcement
-        if (!_config.GetValue<bool>("EnforceHttps"))
-        {
-            issues.Add("HTTPS enforcement is disabled");
-        }
-        
-        return issues.Any() 
-            ? Task.FromResult(HealthCheckResult.Unhealthy(
-                "Security configuration issues: " + string.Join(", ", issues)))
-            : Task.FromResult(HealthCheckResult.Healthy());
-    }
-}
+```bash
+# Install security checker
+composer require enlightn/security-checker
 
-// Register in Program.cs
-builder.Services.AddHealthChecks()
-    .AddCheck<SecurityConfigurationHealthCheck>("security_config");
+# Run security checks
+php artisan security:check
 ```
 
-### 2. Security Middleware Scanner
+#### WordPress Security Plugins
 
-```csharp
-public class SecurityMiddlewareScanner
-{
-    private readonly IApplicationBuilder _app;
-    private readonly ILogger<SecurityMiddlewareScanner> _logger;
-    
-    public SecurityMiddlewareScanner(
-        IApplicationBuilder app,
-        ILogger<SecurityMiddlewareScanner> logger)
-    {
-        _app = app;
-        _logger = logger;
-    }
-    
-    public void Scan()
-    {
-        var middlewareTypes = GetMiddlewareTypes();
+```php
+// Recommended security plugins
+- Wordfence Security
+- Sucuri Security
+- iThemes Security
+```
+
+#### Automated Configuration Scanner
+
+```php
+class SecurityConfigScanner {
+    private $checks = [
+        'debug_mode' => [
+            'file' => 'config/app.php',
+            'pattern' => "/'debug'\s*=>\s*true/",
+            'message' => 'Debug mode should be disabled in production'
+        ],
+        'app_key' => [
+            'file' => '.env',
+            'pattern' => "/APP_KEY=\s*$/",
+            'message' => 'Application key is not set'
+        ],
+        // Add more checks...
+    ];
+
+    public function scan() {
+        $results = [];
         
-        CheckForRequiredMiddleware(middlewareTypes);
-        CheckForDangerousMiddleware(middlewareTypes);
-    }
-    
-    private IEnumerable<Type> GetMiddlewareTypes()
-    {
-        // Reflection to inspect middleware pipeline
-        var field = _app.GetType().GetField("_components", 
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        
-        if (field?.GetValue(_app) is not List<Func<RequestDelegate, RequestDelegate>> components)
-            return Enumerable.Empty<Type>();
-        
-        return components.Select(c => 
-            c.Target?.GetType().GetField("middleware")?.GetValue(c.Target)?.GetType())
-            .Where(t => t != null)!;
-    }
-    
-    private void CheckForRequiredMiddleware(IEnumerable<Type> middlewareTypes)
-    {
-        var requiredMiddleware = new[]
-        {
-            typeof(HstsMiddleware),
-            typeof(HttpsRedirectionMiddleware),
-            typeof(AuthorizationMiddleware)
-        };
-        
-        foreach (var required in requiredMiddleware)
-        {
-            if (!middlewareTypes.Contains(required))
-            {
-                _logger.LogWarning("Missing required middleware: {Middleware}", required.Name);
+        foreach ($this->checks as $check) {
+            $content = file_get_contents(base_path($check['file']));
+            if (preg_match($check['pattern'], $content)) {
+                $results[] = $check['message'];
             }
         }
+        
+        return $results;
+    }
+}
+
+// Usage in a console command
+protected function handle() {
+    $scanner = new SecurityConfigScanner();
+    $issues = $scanner->scan();
+    
+    if (!empty($issues)) {
+        $this->error('Security configuration issues found:');
+        foreach ($issues as $issue) {
+            $this->line('- ' . $issue);
+        }
+        return 1;
     }
     
-    private void CheckForDangerousMiddleware(IEnumerable<Type> middlewareTypes)
-    {
-        var dangerousMiddleware = new[]
-        {
-            typeof(DeveloperExceptionPageMiddleware)
-        };
-        
-        foreach (var dangerous in dangerousMiddleware)
-        {
-            if (middlewareTypes.Contains(dangerous))
-            {
-                _logger.LogError("Dangerous middleware detected in production: {Middleware}", 
-                    dangerous.Name);
-            }
-        }
-    }
+    $this->info('No security configuration issues found');
+    return 0;
 }
 ```
 
 ## Best Practices Summary
 
-1. **Remove Default Configurations** - Never ship with default credentials or settings
-2. **Implement Security Headers** - Comprehensive protection via headers
-3. **Proper Error Handling** - Never expose stack traces in production
-4. **Granular CORS Policies** - Restrict origins, methods, and headers
-5. **HTTP Method Restrictions** - Allow only necessary methods
-6. **Secure File Permissions** - Principle of least privilege for filesystem access
-7. **Configuration Validation** - Automated checks for insecure settings
-8. **Health Monitoring** - Continuous security configuration checks
-9. **Middleware Scanning** - Verify security middleware is properly configured
-10. **Automated Scanning** - Regular checks for misconfigurations
+1. **Harden PHP Configuration**:
+   - Disable dangerous functions
+   - Turn off error display in production
+   - Secure session settings
+
+2. **Secure Framework Configurations**:
+   - Disable debug mode in production
+   - Set proper environment variables
+   - Implement security middleware
+
+3. **File System Security**:
+   - Set proper file/directory permissions
+   - Restrict access to sensitive files
+   - Prevent PHP execution in uploads
+
+4. **Database Security**:
+   - Use least privilege principle for DB users
+   - Enable strict mode
+   - Use SSL for database connections when possible
+
+5. **Security Headers**:
+   - Implement CSP, X-Frame-Options, etc.
+   - Remove server identification headers
+   - Set secure cookie attributes
+
+6. **Error Handling**:
+   - Never expose stack traces in production
+   - Log errors securely
+   - Customize error pages
+
+7. **Regular Scanning**:
+   - Automated configuration checks
+   - Security plugin scans
+   - Manual security audits
+
+8. **Keep Updated**:
+   - Regularly update PHP, WordPress, Laravel
+   - Update plugins and dependencies
+   - Monitor security advisories
+
+9. **Backup and Monitoring**:
+   - Regular backups with secure storage
+   - File integrity monitoring
+   - Security incident logging
+
+10. **Least Privilege Principle**:
+    - Minimal necessary permissions for web server
+    - Separate database users for different operations
+    - Restrict admin access to trusted IPs when possible
