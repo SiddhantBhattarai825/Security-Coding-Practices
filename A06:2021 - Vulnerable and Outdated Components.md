@@ -1,455 +1,392 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A06:2021 - Vulnerable and Outdated Components)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A06:2021 - Vulnerable and Outdated Components)
 
 ## Introduction to Component Risks
 
-Vulnerable and Outdated Components moves up to #6 in the OWASP Top 10 2021. This risk occurs when using components with known vulnerabilities or outdated dependencies that lack security patches. For .NET APIs, this includes NuGet packages, runtime versions, and underlying system components.
+Vulnerable and Outdated Components ranks #6 in the OWASP Top 10 2021. This risk occurs when using libraries, frameworks, and other dependencies with known vulnerabilities. For PHP applications, this includes Composer packages, WordPress plugins/themes, server software, and PHP runtime itself.
 
-## Common Component Risks in .NET APIs
+## Common Component Risks in PHP Applications
 
-1. **Unpatched NuGet Dependencies**
-2. **Outdated .NET Runtime**
-3. **Vulnerable System Libraries**
-4. **Unmaintained Third-Party Components**
-5. **Inherited Framework Vulnerabilities**
-6. **Transitive Dependency Risks**
-7. **Build Toolchain Vulnerabilities**
+1. **Outdated PHP Versions**
+2. **Vulnerable Composer Packages**
+3. **Unpatched WordPress Core/Plugins/Themes**
+4. **Insecure Server Software (Apache/Nginx)**
+5. **Unmaintained Third-Party Libraries**
+6. **Transitive Dependency Vulnerabilities**
+7. **Build Toolchain Weaknesses**
 
 ## Step-by-Step Secure Component Management
 
 ### 1. Dependency Management Framework
 
-#### Secure NuGet Configuration
+#### Secure Composer Configuration
 
-```xml
-<!-- Directory.Build.props - Company-wide NuGet policy -->
-<Project>
-  <PropertyGroup>
-    <NuGetAudit>enable</NuGetAudit>
-    <DisableImplicitNuGetFallbackFolder>true</DisableImplicitNuGetFallbackFolder>
-    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-  </PropertyGroup>
-  
-  <ItemGroup>
-    <PackageSource Remove="nuget.org" />
-    <PackageSource Include="NuGetOrg" 
-                  Source="https://api.nuget.org/v3/index.json" />
-    <PackageSource Include="CompanyInternal" 
-                  Source="https://nuget.company.com/v3/index.json" />
-  </ItemGroup>
-</Project>
-
-<!-- PackageReference with explicit versions -->
-<ItemGroup>
-  <PackageReference Include="Newtonsoft.Json" Version="13.0.3" 
-                   PrivateAssets="all" />
-  <PackageReference Include="Serilog" Version="2.12.0" />
-</ItemGroup>
-```
-
-### 2. Automated Dependency Scanning
-
-#### CI/CD Integration with OWASP Dependency-Check
-
-```yaml
-# Azure Pipeline Example
-- task: DependencyCheck@6
-  inputs:
-    projectName: 'MyAPI'
-    scanPath: '**/*.csproj'
-    suppressionPath: 'security/dependency-check-suppressions.xml'
-    format: 'HTML'
-    failOnCVSS: 7
-    additionalArguments: '--enableExperimental --log dependency-check.log'
-```
-
-#### Programmatic Scanning with NuGet.Client
-
-```csharp
-public class DependencyScanner
+```json
 {
-    private readonly ILogger<DependencyScanner> _logger;
-    private readonly IVulnerabilityDataService _vulnerabilityService;
-
-    public DependencyScanner(
-        ILogger<DependencyScanner> logger,
-        IVulnerabilityDataService vulnerabilityService)
-    {
-        _logger = logger;
-        _vulnerabilityService = vulnerabilityService;
+  "config": {
+    "platform-check": true,
+    "preferred-install": "dist",
+    "sort-packages": true,
+    "allow-plugins": {
+      "composer/installers": true,
+      "php-http/discovery": true
     }
+  },
+  "require": {
+    "php": "^8.1",
+    "laravel/framework": "^10.0",
+    "guzzlehttp/guzzle": "^7.7" 
+  },
+  "require-dev": {
+    "roave/security-advisories": "dev-latest"
+  },
+  "scripts": {
+    "post-update-cmd": [
+      "@composer audit"
+    ]
+  }
+}
+```
 
-    public async Task<ScanResult> ScanProject(string projectPath)
-    {
-        var result = new ScanResult();
-        var packages = await GetPackageReferences(projectPath);
+#### Automated Vulnerability Scanning
+
+```bash
+# Install security checker
+composer require enlightn/security-checker --dev
+
+# Add to CI pipeline
+composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+composer audit
+vendor/bin/security-checker security:check
+```
+
+### 2. WordPress Component Security
+
+#### Plugin/Theme Management
+
+```php
+// Disable plugin/theme editing
+define('DISALLOW_FILE_EDIT', true);
+
+// Auto-update controls
+define('WP_AUTO_UPDATE_CORE', 'minor'); // Only auto-update minor releases
+add_filter('auto_update_plugin', '__return_true');
+add_filter('auto_update_theme', '__return_true');
+
+// Security scanner function
+function scan_vulnerable_plugins() {
+    $plugins = get_plugins();
+    $vulnerabilities = [];
+    
+    foreach ($plugins as $path => $plugin) {
+        $response = wp_remote_get(
+            "https://wpvulndb.com/api/v3/plugins/" . $plugin['TextDomain']
+        );
         
-        foreach (var package in packages)
-        {
-            var vulnerabilities = await _vulnerabilityService
-                .GetVulnerabilities(package.Name, package.Version);
-            
-            if (vulnerabilities.Any())
-            {
-                result.VulnerablePackages.Add((package, vulnerabilities));
-                _logger.LogWarning(
-                    "Vulnerable package detected: {Package}@{Version} with {Count} vulnerabilities",
-                    package.Name, package.Version, vulnerabilities.Count);
+        if (!is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200) {
+            $data = json_decode(wp_remote_retrieve_body($response), true);
+            if (!empty($data[$plugin['TextDomain']]['vulnerabilities'])) {
+                $vulnerabilities[$path] = $data[$plugin['TextDomain']]['vulnerabilities'];
             }
         }
-        
-        return result;
     }
-
-    private async Task<List<PackageReference>> GetPackageReferences(string projectPath)
-    {
-        using var projectStream = File.OpenRead(projectPath);
-        var reader = new PackageReferenceReader(projectStream);
-        return (await reader.GetPackageReferencesAsync()).ToList();
-    }
+    
+    return $vulnerabilities;
 }
 
-public record ScanResult
-{
-    public List<(PackageReference Package, List<Vulnerability> Vulnerabilities)> 
-        VulnerablePackages { get; } = new();
-}
+// Hook into admin notices
+add_action('admin_notices', function() {
+    $vulns = scan_vulnerable_plugins();
+    if (!empty($vulns)) {
+        echo '<div class="notice notice-error">';
+        echo '<p><strong>Security Alert:</strong> Vulnerable plugins detected:</p>';
+        foreach ($vulns as $plugin => $issues) {
+            echo "<p>{$plugin}: " . count($issues) . " vulnerabilities</p>";
+        }
+        echo '</div>';
+    }
+});
 ```
 
 ### 3. Runtime Security Monitoring
 
-#### .NET Runtime Version Checker
+#### PHP Version Checker
 
-```csharp
-public class RuntimeSecurityMonitor : BackgroundService
-{
-    private readonly ILogger<RuntimeSecurityMonitor> _logger;
-    private readonly HttpClient _httpClient;
-    private readonly SecurityConfiguration _config;
-
-    public RuntimeSecurityMonitor(
-        ILogger<RuntimeSecurityMonitor> logger,
-        HttpClient httpClient,
-        IOptions<SecurityConfiguration> config)
-    {
-        _logger = logger;
-        _httpClient = httpClient;
-        _config = config.Value;
+```php
+class PhpSecurityMonitor {
+    private $minVersion = '8.1.0';
+    private $currentVersion;
+    
+    public function __construct() {
+        $this->currentVersion = phpversion();
     }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                await CheckRuntimeVersion();
-                await CheckSecurityPatches();
-                await Task.Delay(TimeSpan.FromHours(1), stoppingToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Runtime security check failed");
-            }
+    
+    public function checkVersion() {
+        if (version_compare($this->currentVersion, $this->minVersion, '<')) {
+            error_log("Security Alert: Outdated PHP version {$this->currentVersion}");
+            return false;
         }
+        return true;
     }
-
-    private async Task CheckRuntimeVersion()
-    {
-        var currentVersion = Environment.Version;
-        var latestSecurityRelease = await GetLatestSecurityRelease();
+    
+    public function checkExtensions() {
+        $required = ['filter', 'hash', 'openssl'];
+        $missing = array_diff($required, get_loaded_extensions());
         
-        if (currentVersion < latestSecurityRelease.Version)
-        {
-            _logger.LogCritical(
-                "Outdated .NET runtime detected. Current: {Current}, Latest secure: {Latest}",
-                currentVersion, latestSecurityRelease.Version);
-                
-            SecurityAlertService.RaiseAlert(
-                "Outdated .NET runtime",
-                $"Running vulnerable version {currentVersion} when {latestSecurityRelease.Version} is available",
-                AlertSeverity.Critical);
+        if (!empty($missing)) {
+            error_log("Security Alert: Missing required extensions: " . implode(', ', $missing));
+            return false;
         }
+        return true;
     }
+}
 
-    private async Task<DotNetRelease> GetLatestSecurityRelease()
-    {
-        var response = await _httpClient.GetFromJsonAsync<DotNetRelease[]>(
-            _config.DotNetReleasesUrl);
-            
-        return response!
-            .Where(r => r.SecurityUpdate)
-            .OrderByDescending(r => r.Version)
-            .First();
-    }
+// Usage
+$monitor = new PhpSecurityMonitor();
+if (!$monitor->checkVersion() || !$monitor->checkExtensions()) {
+    // Alert admin or take action
 }
 ```
 
 ### 4. Patch Management Automation
 
-#### Automated NuGet Patching Service
+#### Automated Update Script
 
-```csharp
-public class NuGetPatchService
-{
-    private readonly NuGetVersion _minVersion;
-    private readonly PackageUpdater _packageUpdater;
-    private readonly ILogger<NuGetPatchService> _logger;
+```bash
+#!/bin/bash
+# Automated security update script for PHP applications
 
-    public NuGetPatchService(
-        IOptions<SecurityConfiguration> config,
-        PackageUpdater packageUpdater,
-        ILogger<NuGetPatchService> logger)
-    {
-        _minVersion = NuGetVersion.Parse(config.Value.MinPackageVersion);
-        _packageUpdater = packageUpdater;
-        _logger = logger;
-    }
+# Update OS packages
+apt-get update
+apt-get upgrade -y
 
-    public async Task UpdateVulnerablePackages(string projectPath)
-    {
-        var packages = await GetPackageReferences(projectPath);
-        var updates = new List<PackageUpdate>();
-        
-        foreach (var package in packages)
-        {
-            if (package.Version < _minVersion)
-            {
-                updates.Add(new PackageUpdate(
-                    package.Name, 
-                    package.Version, 
-                    await GetLatestSecureVersion(package.Name)));
-            }
-        }
+# Update PHP
+apt-get install --only-upgrade php8.1 php8.1-common php8.1-opcache
 
-        if (updates.Any())
-        {
-            await _packageUpdater.ApplyUpdates(projectPath, updates);
-            _logger.LogInformation(
-                "Updated {Count} packages in {Project}", 
-                updates.Count, projectPath);
-        }
-    }
+# For Laravel projects
+cd /var/www/laravel-app
+composer update --no-dev --prefer-dist --optimize-autoloader
+php artisan migrate --force
 
-    private async Task<NuGetVersion> GetLatestSecureVersion(string packageId)
-    {
-        // Implementation to query NuGet API for latest secure version
-    }
-}
+# For WordPress
+cd /var/www/wordpress
+wp core update --minor
+wp plugin update --all
+wp theme update --all
+wp core update-db
+
+# Restart services
+systemctl restart apache2 php8.1-fpm
 ```
 
 ### 5. Component Bill of Materials (BOM)
 
 #### Software BOM Generator
 
-```csharp
-public class SoftwareBomGenerator
-{
-    public async Task<SoftwareBom> GenerateBom(string projectPath)
-    {
-        var packages = await GetPackageReferences(projectPath);
-        var runtime = GetRuntimeInfo();
-        var tooling = GetToolingInfo();
+```php
+class SoftwareBomGenerator {
+    public function generateLaravelBom() {
+        $composer = json_decode(file_get_contents('composer.lock'), true);
         
-        return new SoftwareBom
-        {
-            Metadata = new BomMetadata
-            {
-                Generated = DateTime.UtcNow,
-                Tool = "CompanySecurityBomGenerator/1.0"
-            },
-            Components = packages.Select(p => new Component
-            {
-                Type = "library",
-                Name = p.Name,
-                Version = p.Version.ToString(),
-                Purl = $"pkg:nuget/{p.Name}@{p.Version}",
-                Licenses = await GetLicenses(p.Name, p.Version)
-            })
-            .Concat(new[]
-            {
-                new Component
-                {
-                    Type = "runtime",
-                    Name = runtime.Name,
-                    Version = runtime.Version,
-                    Purl = $"pkg:dotnet/{runtime.Name}@{runtime.Version}"
-                },
-                new Component
-                {
-                    Type = "tool",
-                    Name = tooling.Name,
-                    Version = tooling.Version,
-                    Purl = $"pkg:dotnet/{tooling.Name}@{tooling.Version}"
-                }
-            })
-            .ToList()
-        };
+        $bom = [
+            'metadata' => [
+                'generated' => date('c'),
+                'tool' => 'LaravelBomGenerator/1.0'
+            ],
+            'components' => []
+        ];
+        
+        foreach ($composer['packages'] as $package) {
+            $bom['components'][] = [
+                'type' => 'library',
+                'name' => $package['name'],
+                'version' => $package['version'],
+                'homepage' => $package['homepage'] ?? '',
+                'license' => $package['license'] ?? []
+            ];
+        }
+        
+        return json_encode($bom, JSON_PRETTY_PRINT);
     }
-}
-
-// CycloneDX JSON output example
-{
-  "bomFormat": "CycloneDX",
-  "specVersion": "1.4",
-  "version": 1,
-  "metadata": {
-    "timestamp": "2023-07-20T12:00:00Z",
-    "tools": [
-      {
-        "vendor": "Company",
-        "name": "SecurityBomGenerator",
-        "version": "1.0"
-      }
-    ]
-  },
-  "components": [
-    {
-      "type": "library",
-      "name": "Newtonsoft.Json",
-      "version": "13.0.3",
-      "purl": "pkg:nuget/Newtonsoft.Json@13.0.3"
+    
+    public function generateWordPressBom() {
+        $bom = [
+            'metadata' => [
+                'generated' => date('c'),
+                'tool' => 'WordPressBomGenerator/1.0'
+            ],
+            'components' => []
+        ];
+        
+        // Core
+        $bom['components'][] = [
+            'type' => 'core',
+            'name' => 'wordpress',
+            'version' => get_bloginfo('version')
+        ];
+        
+        // Plugins
+        foreach (get_plugins() as $path => $plugin) {
+            $bom['components'][] = [
+                'type' => 'plugin',
+                'name' => $plugin['Name'],
+                'version' => $plugin['Version'],
+                'path' => $path
+            ];
+        }
+        
+        // Themes
+        foreach (wp_get_themes() as $theme) {
+            $bom['components'][] = [
+                'type' => 'theme',
+                'name' => $theme->get('Name'),
+                'version' => $theme->get('Version')
+            ];
+        }
+        
+        return json_encode($bom, JSON_PRETTY_PRINT);
     }
-  ]
 }
 ```
 
 ### 6. Dependency Firewall
 
-#### NuGet Package Validation Proxy
+#### Composer Package Validator
 
-```csharp
-public class SecureNuGetProxyMiddleware
-{
-    private readonly RequestDelegate _next;
-    private readonly IPackageValidationService _validationService;
-    private readonly ILogger<SecureNuGetProxyMiddleware> _logger;
-
-    public SecureNuGetProxyMiddleware(
-        RequestDelegate next,
-        IPackageValidationService validationService,
-        ILogger<SecureNuGetProxyMiddleware> logger)
-    {
-        _next = next;
-        _validationService = validationService;
-        _logger = logger;
-    }
-
-    public async Task Invoke(HttpContext context)
-    {
-        if (context.Request.Path.StartsWithSegments("/api/v3/package"))
-        {
-            var packageId = context.Request.RouteValues["id"] as string;
-            var packageVersion = context.Request.RouteValues["version"] as string;
-
-            if (!await _validationService.IsPackageAllowed(packageId, packageVersion))
-            {
-                _logger.LogWarning(
-                    "Blocked prohibited package: {Package}@{Version}", 
-                    packageId, packageVersion);
-                
-                context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                await context.Response.WriteAsync(
-                    $"Package {packageId}@{packageVersion} is prohibited by security policy");
-                return;
+```php
+class ComposerFirewall {
+    private $blocklist = [
+        'laravel/framework' => '<10.0',
+        'symfony/symfony' => '<6.0',
+        'monolog/monolog' => '<2.0'
+    ];
+    
+    private $vulnerabilitySources = [
+        'https://packagesecurity.org/api/v1/advisories'
+    ];
+    
+    public function validateInstall($package, $version) {
+        // Check blocklist
+        foreach ($this->blocklist as $blocked => $constraint) {
+            if (strtolower($package) === strtolower($blocked)) {
+                if (Composer\Semver\Semver::satisfies($version, $constraint)) {
+                    throw new RuntimeException("Package {$package}@{$version} is blocklisted");
+                }
             }
         }
-
-        await _next(context);
-    }
-}
-
-public class PackageValidationService : IPackageValidationService
-{
-    private readonly IBlocklistService _blocklist;
-    private readonly IVulnerabilityService _vulnerability;
-
-    public PackageValidationService(
-        IBlocklistService blocklist,
-        IVulnerabilityService vulnerability)
-    {
-        _blocklist = blocklist;
-        _vulnerability = vulnerability;
-    }
-
-    public async Task<bool> IsPackageAllowed(string packageId, string version)
-    {
-        // Check blocklist
-        if (await _blocklist.IsBlocklisted(packageId))
-        {
-            return false;
-        }
-
-        // Check for vulnerabilities
-        var vulnerabilities = await _vulnerability
-            .GetVulnerabilities(packageId, version);
+        
+        // Check known vulnerabilities
+        foreach ($this->vulnerabilitySources as $source) {
+            $response = file_get_contents("{$source}?package={$package}&version={$version}");
+            $data = json_decode($response, true);
             
-        return !vulnerabilities.Any(v => v.Severity >= VulnerabilitySeverity.High);
+            if (!empty($data['advisories'])) {
+                throw new RuntimeException(
+                    "Package {$package}@{$version} has known vulnerabilities: " .
+                    implode(', ', array_column($data['advisories'], 'title'))
+                );
+            }
+        }
+        
+        return true;
     }
 }
+
+// Usage in custom installer
+$firewall = new ComposerFirewall();
+$firewall->validateInstall('guzzlehttp/guzzle', '7.4.0');
 ```
 
-### 7. Container Security Scanning
+### 7. Server Security Scanning
 
-#### Docker Image Analyzer
+#### Server Configuration Scanner
 
-```csharp
-public class ContainerSecurityScanner
-{
-    private readonly ILogger<ContainerSecurityScanner> _logger;
-    private readonly IContainerAnalysisService _analysisService;
-
-    public ContainerSecurityScanner(
-        ILogger<ContainerSecurityScanner> logger,
-        IContainerAnalysisService analysisService)
-    {
-        _logger = logger;
-        _analysisService = analysisService;
-    }
-
-    public async Task<ScanReport> ScanImage(string imageName)
-    {
-        var report = new ScanReport(imageName);
-        var components = await _analysisService.GetComponents(imageName);
+```php
+class ServerSecurityScanner {
+    public function scan() {
+        $checks = [
+            'PHP Version' => $this->checkPhpVersion(),
+            'Dangerous Functions' => $this->checkDisabledFunctions(),
+            'SSL Configuration' => $this->checkSsl(),
+            'File Permissions' => $this->checkPermissions(),
+            'Server Headers' => $this->checkHeaders()
+        ];
         
-        foreach (var component in components)
-        {
-            var vulns = await _analysisService
-                .GetVulnerabilities(component.Name, component.Version);
-                
-            if (vulns.Any())
-            {
-                report.VulnerableComponents.Add((component, vulns));
+        return $checks;
+    }
+    
+    private function checkPhpVersion() {
+        return version_compare(phpversion(), '8.1.0', '>=');
+    }
+    
+    private function checkDisabledFunctions() {
+        $dangerous = ['exec', 'passthru', 'shell_exec', 'system', 'proc_open'];
+        $disabled = array_map('trim', explode(',', ini_get('disable_functions')));
+        
+        return count(array_intersect($dangerous, $disabled)) === count($dangerous);
+    }
+    
+    private function checkSsl() {
+        return extension_loaded('openssl') && 
+               version_compare(OPENSSL_VERSION_TEXT, '1.1.1', '>=');
+    }
+    
+    private function checkPermissions() {
+        $paths = [
+            __DIR__ . '/../.env',
+            __DIR__ . '/../storage',
+            __DIR__ . '/../bootstrap/cache'
+        ];
+        
+        foreach ($paths as $path) {
+            if (file_exists($path)) {
+                $perms = substr(sprintf('%o', fileperms($path)), -4);
+                if ($perms !== '0640' && $perms !== '0644') {
+                    return false;
+                }
             }
         }
-
-        if (report.VulnerableComponents.Any())
-        {
-            _logger.LogWarning(
-                "Found {Count} vulnerable components in {Image}",
-                report.VulnerableComponents.Count, imageName);
+        return true;
+    }
+    
+    private function checkHeaders() {
+        $headers = headers_list();
+        $leaks = ['Server', 'X-Powered-By'];
+        
+        foreach ($leaks as $header) {
+            foreach ($headers as $h) {
+                if (stripos($h, $header) === 0) {
+                    return false;
+                }
+            }
         }
-
-        return report;
+        return true;
     }
 }
-
-// Example integration in CI pipeline
-- task: ContainerScan@1
-  inputs:
-    imageName: 'myapi:$(Build.BuildId)'
-    failOnCritical: true
-    customScanTimeout: '300'
 ```
 
 ## Best Practices Summary
 
-1. **Maintain a Software Bill of Materials (SBOM)** - Know all your components
-2. **Automate Vulnerability Scanning** - Integrate into CI/CD pipeline
-3. **Enforce Version Pinning** - Avoid floating versions in production
-4. **Monitor for Security Patches** - Subscribe to security bulletins
-5. **Implement Dependency Firewalling** - Block known vulnerable packages
-6. **Regularly Update Dependencies** - Establish patch cadence
-7. **Verify Digital Signatures** - Ensure package integrity
-8. **Container Security Scanning** - Analyze runtime environments
-9. **Runtime Protection** - Monitor for vulnerable code execution
-10. **Policy Enforcement** - Define and enforce component policies
+1. **Maintain an Inventory** - Keep track of all components (SBOM)
+2. **Monitor Vulnerabilities** - Use tools like `composer audit`, WP Scan
+3. **Update Regularly** - Establish patch management processes
+4. **Remove Unused Components** - Reduce attack surface
+5. **Secure Configuration** - Harden server and application settings
+6. **Version Pinning** - Avoid floating versions in production
+7. **Security Headers** - Implement proper HTTP security headers
+8. **Automate Scanning** - Integrate security checks into CI/CD
+9. **Runtime Protection** - Use WAFs and security plugins
+10. **Emergency Response** - Have a plan for critical vulnerabilities
+
+## Implementation Checklist
+
+- [ ] Enable Composer security auditing (`composer audit`)
+- [ ] Configure automatic security updates for WordPress core
+- [ ] Pin PHP version in `composer.json`
+- [ ] Regularly scan for vulnerable plugins/themes
+- [ ] Implement server configuration scanning
+- [ ] Generate and maintain a software BOM
+- [ ] Set up monitoring for outdated components
+- [ ] Establish patch management procedures
+- [ ] Remove unused dependencies and plugins
+- [ ] Configure proper file permissions
+- [ ] Subscribe to security mailing lists (PHP, WordPress, etc.)
