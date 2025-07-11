@@ -1,4 +1,4 @@
-# Secure Coding Practices for .NET API: Addressing OWASP Top 10 (A07:2021 - Identification and Authentication Failures)
+# Secure Coding Practices for PHP (WordPress and Laravel): Addressing OWASP Top 10 (A07:2021 - Identification and Authentication Failures)
 
 ## Comprehensive Authentication Security Implementation
 
@@ -6,107 +6,109 @@
 
 #### Core MFA Service Implementation
 
-```csharp
-public class MultiFactorAuthService
+```php
+class MultiFactorAuthService
 {
-    private readonly IUserRepository _userRepository;
-    private readonly ITotpProvider _totpProvider;
-    private readonly ISmsSender _smsSender;
-    private readonly IEmailService _emailService;
-    private readonly ILogger<MultiFactorAuthService> _logger;
+    private $userRepository;
+    private $totpProvider;
+    private $smsSender;
+    private $emailService;
+    private $logger;
 
-    public MultiFactorAuthService(
-        IUserRepository userRepository,
-        ITotpProvider totpProvider,
-        ISmsSender smsSender,
-        IEmailService emailService,
-        ILogger<MultiFactorAuthService> logger)
-    {
-        _userRepository = userRepository;
-        _totpProvider = totpProvider;
-        _smsSender = smsSender;
-        _emailService = emailService;
-        _logger = logger;
+    public function __construct(
+        UserRepository $userRepository,
+        TotpProvider $totpProvider,
+        SmsSender $smsSender,
+        EmailService $emailService,
+        LoggerInterface $logger
+    ) {
+        $this->userRepository = $userRepository;
+        $this->totpProvider = $totpProvider;
+        $this->smsSender = $smsSender;
+        $this->emailService = $emailService;
+        $this->logger = $logger;
     }
 
-    public async Task<MfaResult> RequestMfaChallengeAsync(string userId, MfaMethod method)
+    public function requestMfaChallenge(string $userId, string $method): MfaResult
     {
-        var user = await _userRepository.GetByIdAsync(userId);
-        if (user == null)
-        {
-            _logger.LogWarning("MFA request for non-existent user {UserId}", userId);
-            return MfaResult.Failed("User not found");
+        $user = $this->userRepository->findById($userId);
+        if (!$user) {
+            $this->logger->warning("MFA request for non-existent user {$userId}");
+            return new MfaResult(false, "User not found");
         }
 
-        var challenge = new MfaChallenge
-        {
-            UserId = userId,
-            Method = method,
-            CreatedAt = DateTime.UtcNow,
-            ExpiresAt = DateTime.UtcNow.AddMinutes(5),
-            Code = _totpProvider.GenerateCode(user.MfaSecret),
-            IpAddress = HttpContext.Current.Connection.RemoteIpAddress?.ToString(),
-            UserAgent = HttpContext.Current.Request.Headers["User-Agent"]
-        };
+        $challenge = new MfaChallenge(
+            $userId,
+            $method,
+            new DateTime(),
+            (new DateTime())->add(new DateInterval('PT5M')),
+            $this->totpProvider->generateCode($user->getMfaSecret()),
+            $_SERVER['REMOTE_ADDR'],
+            $_SERVER['HTTP_USER_AGENT']
+        );
 
-        switch (method)
-        {
-            case MfaMethod.Sms:
-                await _smsSender.SendAsync(user.PhoneNumber, 
-                    $"Your verification code is: {challenge.Code}");
+        switch ($method) {
+            case 'sms':
+                $this->smsSender->send(
+                    $user->getPhoneNumber(), 
+                    "Your verification code is: {$challenge->getCode()}"
+                );
                 break;
-            case MfaMethod.Email:
-                await _emailService.SendAsync(user.Email, 
-                    "Verification Code", 
-                    $"Your code is: {challenge.Code}");
+            case 'email':
+                $this->emailService->send(
+                    $user->getEmail(),
+                    "Verification Code",
+                    "Your code is: {$challenge->getCode()}"
+                );
                 break;
-            case MfaMethod.Authenticator:
+            case 'authenticator':
                 // No need to send, user has app
                 break;
             default:
-                throw new ArgumentOutOfRangeException(nameof(method), method, null);
+                throw new InvalidArgumentException("Invalid MFA method: {$method}");
         }
 
-        await _userRepository.SaveChallengeAsync(challenge);
-        return MfaResult.Success(challenge.Id);
+        $this->userRepository->saveChallenge($challenge);
+        return new MfaResult(true, $challenge->getId());
     }
 
-    public async Task<MfaVerificationResult> VerifyMfaChallengeAsync(
-        string challengeId, string code, string userId)
-    {
-        var challenge = await _userRepository.GetChallengeAsync(challengeId);
-        if (challenge == null || challenge.UserId != userId)
-        {
-            _logger.LogWarning("Invalid MFA challenge {ChallengeId} for user {UserId}", 
-                challengeId, userId);
-            return MfaVerificationResult.Failed("Invalid challenge");
+    public function verifyMfaChallenge(
+        string $challengeId, 
+        string $code, 
+        string $userId
+    ): MfaVerificationResult {
+        $challenge = $this->userRepository->getChallenge($challengeId);
+        if (!$challenge || $challenge->getUserId() !== $userId) {
+            $this->logger->warning("Invalid MFA challenge {$challengeId} for user {$userId}");
+            return new MfaVerificationResult(false, "Invalid challenge");
         }
 
-        if (challenge.ExpiresAt < DateTime.UtcNow)
-        {
-            _logger.LogWarning("Expired MFA challenge {ChallengeId}", challengeId);
-            return MfaVerificationResult.Failed("Challenge expired");
+        if ($challenge->getExpiresAt() < new DateTime()) {
+            $this->logger->warning("Expired MFA challenge {$challengeId}");
+            return new MfaVerificationResult(false, "Challenge expired");
         }
 
-        var user = await _userRepository.GetByIdAsync(userId);
-        var isValid = _totpProvider.ValidateCode(
-            user.MfaSecret, 
-            code, 
-            TimeSpan.FromMinutes(2));
+        $user = $this->userRepository->findById($userId);
+        $isValid = $this->totpProvider->validateCode(
+            $user->getMfaSecret(),
+            $code,
+            120 // 2 minutes window
+        );
 
-        if (!isValid)
-        {
-            _logger.LogWarning("Invalid MFA code for challenge {ChallengeId}", challengeId);
-            await _userRepository.RecordFailedAttemptAsync(userId);
-            return MfaVerificationResult.Failed("Invalid code");
+        if (!$isValid) {
+            $this->logger->warning("Invalid MFA code for challenge {$challengeId}");
+            $this->userRepository->recordFailedAttempt($userId);
+            return new MfaVerificationResult(false, "Invalid code");
         }
 
-        await _userRepository.ClearChallengeAsync(challengeId);
-        await _userRepository.ResetFailedAttemptsAsync(userId);
+        $this->userRepository->clearChallenge($challengeId);
+        $this->userRepository->resetFailedAttempts($userId);
 
-        return MfaVerificationResult.Success(
-            GenerateAuthToken(user),
-            GenerateSessionCookie(user));
+        return new MfaVerificationResult(
+            true,
+            $this->generateAuthToken($user),
+            $this->generateSessionCookie($user)
+        );
     }
 }
 ```
@@ -115,106 +117,95 @@ public class MultiFactorAuthService
 
 #### Secure Password Policy Enforcement
 
-```csharp
-public class PasswordPolicyService
+```php
+class PasswordPolicyService
 {
-    private readonly PasswordOptions _options;
-    private readonly IBreachedPasswordService _breachedPasswordService;
-    private readonly ILogger<PasswordPolicyService> _logger;
+    private $options;
+    private $breachedPasswordService;
+    private $logger;
 
-    public PasswordPolicyService(
-        IOptions<PasswordOptions> options,
-        IBreachedPasswordService breachedPasswordService,
-        ILogger<PasswordPolicyService> logger)
-    {
-        _options = options.Value;
-        _breachedPasswordService = breachedPasswordService;
-        _logger = logger;
+    public function __construct(
+        array $options,
+        BreachedPasswordService $breachedPasswordService,
+        LoggerInterface $logger
+    ) {
+        $this->options = $options;
+        $this->breachedPasswordService = $breachedPasswordService;
+        $this->logger = $logger;
     }
 
-    public async Task<PasswordValidationResult> ValidatePasswordAsync(
-        string password, string userId = null)
+    public function validatePassword(string $password, ?string $userId = null): PasswordValidationResult
     {
-        var result = new PasswordValidationResult();
+        $result = new PasswordValidationResult();
 
         // Check against previous passwords if user exists
-        if (userId != null)
-        {
-            var previousPasswords = await _userRepository.GetPreviousPasswordsAsync(userId, 5);
-            if (previousPasswords.Any(p => PasswordHasher.VerifyHashedPassword(p, password)))
-            {
-                result.AddError("Cannot reuse previous passwords");
+        if ($userId !== null) {
+            $previousPasswords = $this->userRepository->getPreviousPasswords($userId, 5);
+            foreach ($previousPasswords as $previousPassword) {
+                if (password_verify($password, $previousPassword)) {
+                    $result->addError("Cannot reuse previous passwords");
+                    break;
+                }
             }
         }
 
         // Check against breached passwords
-        if (await _breachedPasswordService.IsPasswordBreached(password))
-        {
-            result.AddError("Password has been compromised in a data breach");
-            _logger.LogWarning("Breached password attempt detected");
+        if ($this->breachedPasswordService->isPasswordBreached($password)) {
+            $result->addError("Password has been compromised in a data breach");
+            $this->logger->warning("Breached password attempt detected");
         }
 
         // Complexity requirements
-        if (password.Length < _options.RequiredLength)
-        {
-            result.AddError($"Password must be at least {_options.RequiredLength} characters");
+        if (strlen($password) < $this->options['min_length']) {
+            $result->addError("Password must be at least {$this->options['min_length']} characters");
         }
 
-        if (_options.RequireDigit && !password.Any(char.IsDigit))
-        {
-            result.AddError("Password must contain at least one digit");
+        if ($this->options['require_digit'] && !preg_match('/\d/', $password)) {
+            $result->addError("Password must contain at least one digit");
         }
 
-        if (_options.RequireLowercase && !password.Any(char.IsLower))
-        {
-            result.AddError("Password must contain at least one lowercase letter");
+        if ($this->options['require_lowercase'] && !preg_match('/[a-z]/', $password)) {
+            $result->addError("Password must contain at least one lowercase letter");
         }
 
-        if (_options.RequireUppercase && !password.Any(char.IsUpper))
-        {
-            result.AddError("Password must contain at least one uppercase letter");
+        if ($this->options['require_uppercase'] && !preg_match('/[A-Z]/', $password)) {
+            $result->addError("Password must contain at least one uppercase letter");
         }
 
-        if (_options.RequireNonAlphanumeric && password.All(char.IsLetterOrDigit))
-        {
-            result.AddError("Password must contain at least one special character");
+        if ($this->options['require_special'] && !preg_match('/[^a-zA-Z0-9]/', $password)) {
+            $result->addError("Password must contain at least one special character");
         }
 
-        return result;
+        return $result;
     }
 }
 
 // Password hashing service using Argon2
-public class AdvancedPasswordHasher : IPasswordHasher
+class AdvancedPasswordHasher
 {
-    private readonly Argon2Config _config;
+    private $options;
 
-    public AdvancedPasswordHasher(IOptions<Argon2Config> config)
+    public function __construct(array $options)
     {
-        _config = config.Value;
+        $this->options = $options;
     }
 
-    public string HashPassword(string password)
+    public function hashPassword(string $password): string
     {
-        using var argon2 = new Argon2id(Encoding.UTF8.GetBytes(password))
-        {
-            Salt = RandomNumberGenerator.GetBytes(16),
-            DegreeOfParallelism = _config.DegreeOfParallelism,
-            Iterations = _config.Iterations,
-            MemorySize = _config.MemorySize
-        };
-
-        var hash = argon2.GetBytes(32);
-        return Convert.ToBase64String(hash);
+        return password_hash(
+            $password,
+            PASSWORD_ARGON2ID,
+            [
+                'memory_cost' => $this->options['memory_cost'],
+                'time_cost' => $this->options['time_cost'],
+                'threads' => $this->options['threads']
+            ]
+        );
     }
 
-    public bool VerifyPassword(string hashedPassword, string providedPassword)
+    public function verifyPassword(string $hashedPassword, string $providedPassword): bool
     {
-        var hashBytes = Convert.FromBase64String(hashedPassword);
-        var providedHash = HashPassword(providedPassword);
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.UTF8.GetBytes(hashedPassword),
-            Encoding.UTF8.GetBytes(providedHash));
+        return password_verify($providedPassword, $hashedPassword);
     }
 }
 ```
@@ -223,148 +214,116 @@ public class AdvancedPasswordHasher : IPasswordHasher
 
 #### JWT Token Service with Advanced Security
 
-```csharp
-public class JwtTokenService
+```php
+class JwtTokenService
 {
-    private readonly JwtSettings _settings;
-    private readonly TokenValidationParameters _validationParameters;
-    private readonly ILogger<JwtTokenService> _logger;
+    private $secret;
+    private $issuer;
+    private $audience;
+    private $tokenLifetime;
+    private $logger;
 
-    public JwtTokenService(
-        IOptions<JwtSettings> settings,
-        ILogger<JwtTokenService> logger)
-    {
-        _settings = settings.Value;
-        _logger = logger;
-        
-        _validationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidIssuer = _settings.Issuer,
-            ValidateAudience = true,
-            ValidAudience = _settings.Audience,
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(_settings.Secret)),
-            ValidateLifetime = true,
-            RequireExpirationTime = true,
-            ClockSkew = TimeSpan.Zero,
-            NameClaimType = JwtRegisteredClaimNames.Sub,
-            RoleClaimType = ClaimTypes.Role
-        };
+    public function __construct(
+        string $secret,
+        string $issuer,
+        string $audience,
+        int $tokenLifetime,
+        LoggerInterface $logger
+    ) {
+        $this->secret = $secret;
+        $this->issuer = $issuer;
+        $this->audience = $audience;
+        $this->tokenLifetime = $tokenLifetime;
+        $this->logger = $logger;
     }
 
-    public string GenerateToken(User user, IEnumerable<Claim> additionalClaims = null)
+    public function generateToken(User $user, array $additionalClaims = []): string
     {
-        var claims = new List<Claim>
-        {
-            new(JwtRegisteredClaimNames.Sub, user.Id),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-            new(JwtRegisteredClaimNames.Iat, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString()),
-            new(ClaimTypes.Name, user.UserName),
-            new(ClaimTypes.Email, user.Email),
-            new("mfa_verified", "false") // Will be updated after MFA
-        };
+        $now = new DateTimeImmutable();
+        $expire = $now->add(new DateInterval("PT{$this->tokenLifetime}M"));
 
-        if (additionalClaims != null)
-        {
-            claims.AddRange(additionalClaims);
+        $claims = [
+            'iat' => $now->getTimestamp(),
+            'iss' => $this->issuer,
+            'nbf' => $now->getTimestamp(),
+            'exp' => $expire->getTimestamp(),
+            'aud' => $this->audience,
+            'sub' => $user->getId(),
+            'name' => $user->getUsername(),
+            'email' => $user->getEmail(),
+            'mfa_verified' => false
+        ];
+
+        $claims = array_merge($claims, $additionalClaims);
+
+        return JWT::encode(
+            $claims,
+            $this->secret,
+            'HS512'
+        );
+    }
+
+    public function validateToken(string $token): array
+    {
+        try {
+            $decoded = JWT::decode(
+                $token,
+                $this->secret,
+                ['HS512']
+            );
+
+            return (array)$decoded;
+        } catch (ExpiredException $e) {
+            $this->logger->warning("Expired token attempt: {$token}");
+            throw new AuthException("Token has expired", 0, $e);
+        } catch (Exception $e) {
+            $this->logger->warning("Invalid token attempt: {$token}");
+            throw new AuthException("Invalid token", 0, $e);
         }
-
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_settings.Secret));
-        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha512Signature);
-
-        var token = new JwtSecurityToken(
-            issuer: _settings.Issuer,
-            audience: _settings.Audience,
-            claims: claims,
-            expires: DateTime.UtcNow.AddMinutes(_settings.TokenLifetimeMinutes),
-            signingCredentials: creds);
-
-        return new JwtSecurityTokenHandler().WriteToken(token);
     }
 
-    public ClaimsPrincipal ValidateToken(string token)
+    public function validateTokenWithDetails(string $token): TokenValidationReport
     {
-        try
-        {
-            var principal = new JwtSecurityTokenHandler()
-                .ValidateToken(token, _validationParameters, out var validatedToken);
+        $report = new TokenValidationReport();
 
-            if (validatedToken is not JwtSecurityToken jwtToken ||
-                !jwtToken.Header.Alg.Equals(SecurityAlgorithms.HmacSha512Signature, 
-                    StringComparison.InvariantCultureIgnoreCase))
-            {
-                throw new SecurityTokenException("Invalid token");
+        try {
+            // Decode without verification first to get header
+            $tks = explode('.', $token);
+            if (count($tks) != 3) {
+                throw new UnexpectedValueException('Wrong number of segments');
+            }
+            $header = json_decode(base64_decode(strtr($tks[0], '-_', '+/')), true);
+            
+            // Check algorithm
+            if ($header['alg'] !== 'HS512') {
+                $report->weakAlgorithm = true;
             }
 
-            return principal;
-        }
-        catch (SecurityTokenExpiredException ex)
-        {
-            _logger.LogWarning("Expired token attempt: {Token}", token);
-            throw new AuthException("Token has expired", ex);
-        }
-        catch (SecurityTokenValidationException ex)
-        {
-            _logger.LogWarning("Invalid token attempt: {Token}", token);
-            throw new AuthException("Invalid token", ex);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Token validation error");
-            throw new AuthException("Token validation failed", ex);
-        }
-    }
-
-    public TokenValidationReport ValidateTokenWithDetails(string token)
-    {
-        var report = new TokenValidationReport();
-        
-        try
-        {
-            var handler = new JwtSecurityTokenHandler();
+            // Now decode with verification
+            $decoded = JWT::decode($token, $this->secret, ['HS512']);
+            $decodedArray = (array)$decoded;
             
-            // Initial validation without lifetime check
-            var validationParams = _validationParameters.Clone();
-            validationParams.ValidateLifetime = false;
+            $report->tokenDetails = $decodedArray;
             
-            handler.ValidateToken(token, validationParams, out var securityToken);
-            
-            if (securityToken is JwtSecurityToken jwtToken)
-            {
-                report.TokenDetails = jwtToken;
-                
-                // Check expiration separately
-                var now = DateTime.UtcNow;
-                if (jwtToken.ValidTo < now)
-                {
-                    report.Expired = true;
-                    report.ExpiryTime = jwtToken.ValidTo;
-                }
-                
-                // Check issuer
-                if (!jwtToken.Issuer.Equals(_settings.Issuer))
-                {
-                    report.InvalidIssuer = true;
-                }
-                
-                // Check algorithm
-                if (!jwtToken.Header.Alg.Equals(SecurityAlgorithms.HmacSha512Signature))
-                {
-                    report.WeakAlgorithm = true;
-                }
+            // Check expiration
+            $now = new DateTimeImmutable();
+            if ($decodedArray['exp'] < $now->getTimestamp()) {
+                $report->expired = true;
+                $report->expiryTime = (new DateTime())->setTimestamp($decodedArray['exp']);
             }
             
-            report.Valid = !report.Expired && !report.InvalidIssuer && !report.WeakAlgorithm;
-        }
-        catch (Exception ex)
-        {
-            report.ValidationException = ex;
-            report.Valid = false;
+            // Check issuer
+            if ($decodedArray['iss'] !== $this->issuer) {
+                $report->invalidIssuer = true;
+            }
+            
+            $report->valid = !$report->expired && !$report->invalidIssuer && !$report->weakAlgorithm;
+        } catch (Exception $e) {
+            $report->validationException = $e;
+            $report->valid = false;
         }
         
-        return report;
+        return $report;
     }
 }
 ```
@@ -373,85 +332,92 @@ public class JwtTokenService
 
 #### Account Lockout and Brute Force Protection
 
-```csharp
-public class AccountProtectionService
+```php
+class AccountProtectionService
 {
-    private readonly IAccountLockoutStore _lockoutStore;
-    private readonly ILogger<AccountProtectionService> _logger;
-    private readonly SecuritySettings _settings;
+    private $lockoutStore;
+    private $settings;
+    private $logger;
 
-    public AccountProtectionService(
-        IAccountLockoutStore lockoutStore,
-        IOptions<SecuritySettings> settings,
-        ILogger<AccountProtectionService> logger)
-    {
-        _lockoutStore = lockoutStore;
-        _settings = settings.Value;
-        _logger = logger;
+    public function __construct(
+        AccountLockoutStore $lockoutStore,
+        array $settings,
+        LoggerInterface $logger
+    ) {
+        $this->lockoutStore = $lockoutStore;
+        $this->settings = $settings;
+        $this->logger = $logger;
     }
 
-    public async Task<AccountStatus> CheckAccountStatusAsync(string userId)
+    public function checkAccountStatus(string $userId): AccountStatus
     {
-        var status = await _lockoutStore.GetStatusAsync(userId);
+        $status = $this->lockoutStore->getStatus($userId);
         
-        if (status.LockedUntil > DateTime.UtcNow)
-        {
-            return AccountStatus.Locked(status.LockedUntil);
+        if ($status->isLocked()) {
+            return AccountStatus::locked($status->getLockedUntil());
         }
         
-        if (status.FailedAttempts >= _settings.MaxFailedAttempts)
-        {
-            await LockAccountAsync(userId);
-            return AccountStatus.Locked(DateTime.UtcNow.Add(_settings.LockoutDuration));
+        if ($status->getFailedAttempts() >= $this->settings['max_failed_attempts']) {
+            $this->lockAccount($userId);
+            return AccountStatus::locked(
+                (new DateTime())->add(
+                    new DateInterval($this->settings['lockout_duration'])
+                )
+            );
         }
         
-        return AccountStatus.Active();
+        return AccountStatus::active();
     }
 
-    public async Task RecordFailedAttemptAsync(string userId, string ipAddress)
+    public function recordFailedAttempt(string $userId, string $ipAddress): void
     {
-        var status = await _lockoutStore.GetStatusAsync(userId);
-        status.FailedAttempts++;
-        status.LastFailedAttempt = DateTime.UtcNow;
-        status.FailedAttemptIp = ipAddress;
+        $status = $this->lockoutStore->getStatus($userId);
+        $status->incrementFailedAttempts();
+        $status->setLastFailedAttempt(new DateTime());
+        $status->setFailedAttemptIp($ipAddress);
         
-        await _lockoutStore.UpdateStatusAsync(status);
+        $this->lockoutStore->updateStatus($status);
         
-        _logger.LogWarning(
-            "Failed login attempt for user {UserId} from {IP}. Attempt {AttemptCount}",
-            userId, ipAddress, status.FailedAttempts);
+        $this->logger->warning(
+            "Failed login attempt for user {$userId} from {$ipAddress}. Attempt {$status->getFailedAttempts()}"
+        );
             
-        if (status.FailedAttempts % 3 == 0)
-        {
-            SecurityAlertService.RaiseAlert(
-                $"Repeated failed attempts for user {userId}",
-                $"Now at {status.FailedAttempts} failed attempts from {ipAddress}",
-                AlertSeverity.Medium);
+        if ($status->getFailedAttempts() % 3 === 0) {
+            SecurityAlertService::raiseAlert(
+                "Repeated failed attempts for user {$userId}",
+                "Now at {$status->getFailedAttempts()} failed attempts from {$ipAddress}",
+                AlertSeverity::MEDIUM
+            );
         }
     }
 
-    public async Task ResetFailedAttemptsAsync(string userId)
+    public function resetFailedAttempts(string $userId): void
     {
-        var status = await _lockoutStore.GetStatusAsync(userId);
-        status.FailedAttempts = 0;
-        status.LastFailedAttempt = null;
-        await _lockoutStore.UpdateStatusAsync(status);
+        $status = $this->lockoutStore->getStatus($userId);
+        $status->resetFailedAttempts();
+        $this->lockoutStore->updateStatus($status);
     }
 
-    private async Task LockAccountAsync(string userId)
+    private function lockAccount(string $userId): void
     {
-        var status = await _lockoutStore.GetStatusAsync(userId);
-        status.LockedUntil = DateTime.UtcNow.Add(_settings.LockoutDuration);
-        await _lockoutStore.UpdateStatusAsync(status);
+        $status = $this->lockoutStore->getStatus($userId);
+        $status->lockUntil(
+            (new DateTime())->add(
+                new DateInterval($this->settings['lockout_duration'])
+            )
+        );
         
-        _logger.LogWarning(
-            "Account {UserId} locked until {LockoutEnd}", 
-            userId, status.LockedUntil);
+        $this->lockoutStore->updateStatus($status);
+        
+        $this->logger->warning(
+            "Account {$userId} locked until {$status->getLockedUntil()->format('Y-m-d H:i:s')}"
+        );
             
-        SecurityAlertService.RaiseAlert(
-            $"Account {userId} locked due to too many failed attempts",
-            $"Account locked until {status.LockedUntil}",
-            AlertSeverity.High);
+        SecurityAlertService::raiseAlert(
+            "Account {$userId} locked due to too many failed attempts",
+            "Account locked until {$status->getLockedUntil()->format('Y-m-d H:i:s')}",
+            AlertSeverity::HIGH
+        );
     }
 }
 ```
@@ -460,88 +426,97 @@ public class AccountProtectionService
 
 #### Comprehensive Auth Audit System
 
-```csharp
-public class AuthenticationAuditService
+```php
+class AuthenticationAuditService
 {
-    private readonly IAuditEventStore _eventStore;
-    private readonly ILogger<AuthenticationAuditService> _logger;
+    private $eventStore;
+    private $logger;
 
-    public AuthenticationAuditService(
-        IAuditEventStore eventStore,
-        ILogger<AuthenticationAuditService> logger)
-    {
-        _eventStore = eventStore;
-        _logger = logger;
+    public function __construct(
+        AuditEventStore $eventStore,
+        LoggerInterface $logger
+    ) {
+        $this->eventStore = $eventStore;
+        $this->logger = $logger;
     }
 
-    public async Task LogAuthenticationEventAsync(
-        string userId, 
-        AuthEventType eventType, 
-        string ipAddress, 
-        string userAgent, 
-        string deviceId = null,
-        bool? success = null,
-        string additionalInfo = null)
-    {
-        var auditEvent = new AuthAuditEvent
-        {
-            Timestamp = DateTime.UtcNow,
-            UserId = userId,
-            EventType = eventType,
-            IpAddress = ipAddress,
-            UserAgent = userAgent,
-            DeviceId = deviceId,
-            Success = success,
-            AdditionalInfo = additionalInfo
-        };
+    public function logAuthenticationEvent(
+        string $userId,
+        string $eventType,
+        string $ipAddress,
+        string $userAgent,
+        ?string $deviceId = null,
+        ?bool $success = null,
+        ?string $additionalInfo = null
+    ): void {
+        $auditEvent = new AuthAuditEvent(
+            new DateTime(),
+            $userId,
+            $eventType,
+            $ipAddress,
+            $userAgent,
+            $deviceId,
+            $success,
+            $additionalInfo
+        );
 
-        await _eventStore.StoreEventAsync(auditEvent);
+        $this->eventStore->storeEvent($auditEvent);
         
-        if (eventType == AuthEventType.FailedLogin || 
-            eventType == AuthEventType.SuspiciousActivity)
-        {
-            _logger.LogWarning(
-                "Auth event {EventType} for user {UserId} from {IP} - {Info}",
-                eventType, userId, ipAddress, additionalInfo);
+        if (in_array($eventType, [AuthEventType::FAILED_LOGIN, AuthEventType::SUSPICIOUS_ACTIVITY])) {
+            $this->logger->warning(
+                "Auth event {$eventType} for user {$userId} from {$ipAddress} - {$additionalInfo}"
+            );
         }
     }
 
-    public async Task AnalyzeRecentActivityAsync(string userId)
+    public function analyzeRecentActivity(string $userId): void
     {
-        var recentEvents = await _eventStore.GetRecentEventsAsync(userId, TimeSpan.FromDays(7));
+        $recentEvents = $this->eventStore->getRecentEvents($userId, new DateInterval('P7D'));
         
         // Detect suspicious login patterns
-        var distinctIpCount = recentEvents
-            .Where(e => e.EventType == AuthEventType.Login)
-            .Select(e => e.IpAddress)
-            .Distinct()
-            .Count();
-            
-        if (distinctIpCount > 3)
-        {
-            await LogAuthenticationEventAsync(
-                userId,
-                AuthEventType.SuspiciousActivity,
-                null, null,
-                additionalInfo: $"Multiple IPs detected: {distinctIpCount}");
+        $distinctIps = [];
+        foreach ($recentEvents as $event) {
+            if ($event->getEventType() === AuthEventType::LOGIN) {
+                $distinctIps[$event->getIpAddress()] = true;
+            }
+        }
+        
+        if (count($distinctIps) > 3) {
+            $this->logAuthenticationEvent(
+                $userId,
+                AuthEventType::SUSPICIOUS_ACTIVITY,
+                null,
+                null,
+                null,
+                null,
+                "Multiple IPs detected: " . count($distinctIps)
+            );
                 
-            SecurityAlertService.RaiseAlert(
-                $"Suspicious login pattern for user {userId}",
-                $"Logged in from {distinctIpCount} different IPs recently",
-                AlertSeverity.Medium);
+            SecurityAlertService::raiseAlert(
+                "Suspicious login pattern for user {$userId}",
+                "Logged in from " . count($distinctIps) . " different IPs recently",
+                AlertSeverity::MEDIUM
+            );
         }
         
         // Check for failed login spikes
-        var failedCount = recentEvents
-            .Count(e => e.EventType == AuthEventType.FailedLogin);
+        $failedCount = 0;
+        foreach ($recentEvents as $event) {
+            if ($event->getEventType() === AuthEventType::FAILED_LOGIN) {
+                $failedCount++;
+            }
+        }
             
-        if (failedCount > 5)
-        {
-            await LogAuthenticationEventAsync(
-                userId,
-                AuthEventType.SuspiciousActivity,
-                null, null,
-                additionalInfo: $"Multiple failed attempts: {failedCount}");
+        if ($failedCount > 5) {
+            $this->logAuthenticationEvent(
+                $userId,
+                AuthEventType::SUSPICIOUS_ACTIVITY,
+                null,
+                null,
+                null,
+                null,
+                "Multiple failed attempts: {$failedCount}"
+            );
         }
     }
 }
@@ -551,18 +526,18 @@ public class AuthenticationAuditService
 
 1. **Multi-Factor Authentication**
    - Implement TOTP, SMS, and email verification options
-   - Enforce MFA for privileged operations
-   - Store MFA secrets securely
+   - Enforce MFA for admin/sensitive operations
+   - Store MFA secrets securely (encrypted)
 
 2. **Password Security**
    - Enforce strong password policies (min 12 chars, complexity)
-   - Implement secure password hashing (Argon2, PBKDF2)
+   - Use modern hashing (Argon2id, bcrypt)
    - Check against breached password databases
-   - Prevent password reuse
+   - Prevent password reuse (last 5 passwords)
 
 3. **Session Management**
    - Use secure, signed tokens with short lifespans
-   - Implement token revocation
+   - Implement token invalidation on logout
    - Enforce HTTPS for all auth communications
    - Use secure cookie attributes (HttpOnly, Secure, SameSite)
 
@@ -570,22 +545,48 @@ public class AuthenticationAuditService
    - Implement progressive account lockout
    - Detect and prevent brute force attacks
    - Monitor for suspicious login patterns
-   - Provide secure account recovery
+   - Provide secure account recovery (no security questions)
 
 5. **Secure Authentication Protocols**
    - Implement OAuth 2.0/OpenID Connect correctly
    - Validate ID tokens properly
    - Use PKCE for public clients
-   - Store client secrets securely
+   - Store client secrets securely (not in code)
 
 6. **Comprehensive Logging**
-   - Log all authentication events
-   - Include contextual data (IP, user agent)
+   - Log all authentication attempts (success/failure)
+   - Include contextual data (IP, user agent, timestamp)
    - Detect and alert on suspicious patterns
    - Protect audit logs from tampering
 
 7. **Continuous Monitoring**
    - Monitor for authentication anomalies
-   - Alert on security events
+   - Alert on security events (failed logins, lockouts)
    - Regularly review access patterns
    - Update security measures based on threats
+
+## Additional PHP-Specific Recommendations
+
+1. **PHP Configuration**
+   - Set `session.cookie_httponly = 1`
+   - Set `session.cookie_secure = 1`
+   - Set `session.use_strict_mode = 1`
+   - Disable dangerous functions (`exec`, `system`, etc.)
+
+2. **WordPress Specific**
+   - Limit login attempts (plugin or custom solution)
+   - Disable XML-RPC if not needed
+   - Use application passwords for API access
+   - Implement two-factor authentication
+
+3. **Laravel Specific**
+   - Use built-in auth scaffolding
+   - Implement Laravel Sanctum/Fortify for API auth
+   - Use Laravel's rate limiting for login attempts
+   - Enable CSRF protection for web routes
+
+4. **General PHP Applications**
+   - Use prepared statements to prevent SQL injection
+   - Implement proper password reset flows
+   - Sanitize all user input
+   - Validate all user output (XSS protection)
